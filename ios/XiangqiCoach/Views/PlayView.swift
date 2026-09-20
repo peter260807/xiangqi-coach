@@ -4,6 +4,11 @@ struct PlayView: View {
     @ObservedObject var game: GameState
     @Binding var showSettings: Bool
 
+    /// 横竖两个方向都宽松（iPad 全屏、iPad 分屏的大部分）才走左右分栏。
+    /// iPhone 横屏宽度也是 regular，但高度很紧 —— 那时候竖排反而更好用。
+    @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.verticalSizeClass) private var vSize
+
     @State private var candidates: [CandidateMove] = []
     @State private var showCoach = false
     @State private var panelTitle = "教练"
@@ -16,18 +21,13 @@ struct PlayView: View {
 
     private var scenes: [XQScene] { SceneCatalog.all(game.library) }
 
+    /// 宽高都宽松（iPad 全屏、iPad 分屏的大部分）时走左右分栏：
+    /// 棋盘占左边，操作与棋谱记录占右边 —— 不用来回滚动，棋盘也能吃满高度。
+    private var isWide: Bool { hSize == .regular && vSize == .regular }
+
     var body: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                evalBar
-                boardArea
-                statusBar
-                controls
-                moveList
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 6)
-            .padding(.bottom, 96)   // 给底部标签栏留出空间，否则最后一行控件会被压住
+        Group {
+            if isWide { wideLayout } else { compactLayout }
         }
         .background(Palette.paper.ignoresSafeArea())
         .navigationTitle("")
@@ -61,6 +61,48 @@ struct PlayView: View {
         }
         .sheet(isPresented: $showCoach) { coachSheet }
         .sheet(isPresented: $showNotation) { NotationSheet(game: game) }
+    }
+
+    // MARK: - 布局
+
+    /// 窄屏（iPhone 竖屏 / 横屏）：竖着排，靠滚动
+    private var compactLayout: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                evalBar
+                boardArea
+                statusBar
+                controls
+                moveList
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 6)
+            .padding(.bottom, 96)   // 给底部标签栏留出空间，否则最后一行控件会被压住
+        }
+    }
+
+    /// 宽屏（iPad）：左右分栏，棋盘在左、控制与记录在右
+    private var wideLayout: some View {
+        HStack(alignment: .top, spacing: 20) {
+            VStack(spacing: 10) {
+                evalBar
+                boardArea
+                statusBar
+            }
+            .frame(maxWidth: 640)
+
+            ScrollView {
+                VStack(spacing: 8) {
+                    controls
+                    moveList
+                }
+                .padding(.bottom, 32)
+            }
+            // 给个区间而不是固定宽度：竖屏 iPad 宽度紧张时让出空间给棋盘
+            .frame(minWidth: 330, idealWidth: 380, maxWidth: 420)
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 8)
     }
 
     // MARK: - 胜率条
@@ -120,6 +162,9 @@ struct PlayView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        // 必须给整个棋盘区定死比例：点击层里的 GeometryReader 是贪婪的，
+        // 不约束的话它会把 ZStack 撑满可用高度，状态栏就被顶到屏幕最底下了。
+        .aspectRatio(BoardMetrics.aspect, contentMode: .fit)
         .animation(.easeOut(duration: 0.2), value: game.toast)
     }
 

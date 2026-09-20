@@ -7,6 +7,9 @@ struct TrainView: View {
 
     private var library: XiangqiLibrary { game.library }
 
+    /// 列表在 iPad 上自动排成两列，iPhone 上仍然是一列
+    private let drillCols = [GridItem(.adaptive(minimum: 340), spacing: 10)]
+
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
@@ -20,41 +23,50 @@ struct TrainView: View {
                 if drills.isEmpty {
                     emptyCard("开始一局对弈后，这里会给出针对性建议")
                 } else {
-                    ForEach(drills) { d in
-                        DrillRow(badge: d.badge, title: d.title, subtitle: d.desc) {
-                            openScene(d.sceneId)
+                    LazyVGrid(columns: drillCols, spacing: 10) {
+                        ForEach(drills) { d in
+                            DrillRow(badge: d.badge, title: d.title, subtitle: d.desc) {
+                                openScene(d.sceneId)
+                            }
                         }
                     }
                 }
 
                 SectionHeader(title: "杀法练习",
                               trailing: "\(archive.solvedDrills.filter { $0.hasPrefix("mate:") }.count) / \(library.mates.count) 已通")
-                ForEach(library.mates) { m in
-                    let done = archive.solvedDrills.contains("mate:\(m.id)")
-                    DrillRow(badge: done ? "✓" : (m.tier == 1 ? "一" : "二"),
-                             title: m.name,
-                             subtitle: "\(m.tier == 1 ? "一步杀" : "两步杀") · \(m.idea.prefix(28))…") {
-                        openScene("mate:\(m.id)")
+                LazyVGrid(columns: drillCols, spacing: 10) {
+                    ForEach(library.mates) { m in
+                        let done = archive.solvedDrills.contains("mate:\(m.id)")
+                        DrillRow(badge: done ? "✓" : (m.tier == 1 ? "一" : "二"),
+                                 title: m.name,
+                                 subtitle: "\(m.tier == 1 ? "一步杀" : "两步杀") · \(m.idea.prefix(28))…") {
+                            openScene("mate:\(m.id)")
+                        }
                     }
                 }
 
                 SectionHeader(title: "开局库")
-                ForEach(library.openings) { o in
-                    DrillRow(badge: "局", title: o.name, subtitle: o.style) {
-                        openScene("opening:\(o.id)")
+                LazyVGrid(columns: drillCols, spacing: 10) {
+                    ForEach(library.openings) { o in
+                        DrillRow(badge: "局", title: o.name, subtitle: o.style) {
+                            openScene("opening:\(o.id)")
+                        }
                     }
                 }
 
                 SectionHeader(title: "实用残局")
-                ForEach(library.studies) { s in
-                    DrillRow(badge: "残", title: s.name, subtitle: "红先取胜") {
-                        openScene("study:\(s.id)")
+                LazyVGrid(columns: drillCols, spacing: 10) {
+                    ForEach(library.studies) { s in
+                        DrillRow(badge: "残", title: s.name, subtitle: "红先取胜") {
+                            openScene("study:\(s.id)")
+                        }
                     }
                 }
             }
             .padding(.horizontal, 14)
             .padding(.top, 6)
             .padding(.bottom, 96)
+            .frame(maxWidth: 1000)   // iPad 上别把列表拉成一条超长的横条
         }
         .background(Palette.paper.ignoresSafeArea())
         .navigationTitle("训练")
@@ -89,7 +101,8 @@ struct StatsView: View {
             VStack(spacing: 10) {
                 let rep = archive.computeAbilities(mateTotal: game.library.mates.count)
 
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
+                // 手机上排成 4 列；iPad 上按可用宽度自动多排几个
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 86, maximum: 210), spacing: 8)], spacing: 8) {
                     StatCard(value: "\(rep.games)", label: "总对局")
                     StatCard(value: rep.finished > 0 ? "\(rep.winRate)%" : "—", label: "胜率",
                              tone: rep.finished > 0 && rep.winRate >= 50 ? "good" : "bad")
@@ -163,6 +176,7 @@ struct StatsView: View {
             .padding(.horizontal, 14)
             .padding(.top, 6)
             .padding(.bottom, 96)
+            .frame(maxWidth: 1000)   // iPad 上别把内容拉成一条超长的横条
         }
         .background(Palette.paper.ignoresSafeArea())
         .navigationTitle("战绩")

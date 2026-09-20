@@ -31,6 +31,24 @@ struct RootView: View {
     @State private var showSettings = false
 
     var body: some View {
+        Group {
+            if #available(iOS 18.0, *) {
+                // iPad 上它会自动变成左侧边栏，更贴合 iPad 的使用习惯；
+                // iPhone 上仍然是底部标签栏
+                tabs.tabViewStyle(.sidebarAdaptable)
+            } else {
+                tabs
+            }
+        }
+        .background(Palette.paper)
+        .sheet(isPresented: $showSettings) {
+            SettingsView(config: AIConfig.shared, archive: archive)
+        }
+        .onAppear { applyLaunchOverrides() }
+    }
+
+    /// 三个页面。单独抽出来是为了按系统版本套不同样式
+    private var tabs: some View {
         TabView(selection: $tab) {
             PlayView(game: game, showSettings: $showSettings)
                 .tabItem { Label("对弈", systemImage: "checkerboard.rectangle") }
@@ -44,11 +62,6 @@ struct RootView: View {
                 .tabItem { Label("战绩", systemImage: "chart.bar.fill") }
                 .tag(2)
         }
-        .background(Palette.paper)
-        .sheet(isPresented: $showSettings) {
-            SettingsView(config: AIConfig.shared, archive: archive)
-        }
-        .onAppear { applyLaunchOverrides() }
     }
 
     /// 自动化截图用的启动钩子：

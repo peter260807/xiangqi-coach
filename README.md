@@ -93,6 +93,17 @@ xcodebuild -project XiangqiCoach.xcodeproj -scheme XiangqiCoach \
 > 工程文件由 `project.yml` 生成，**不纳入版本管理**，这样多人协作不会因为
 > `project.pbxproj` 冲突。
 
+**iPhone 与 iPad 都支持**，按可用空间自动切换布局：
+
+| 设备 | 布局 |
+|---|---|
+| iPhone（竖屏 / 横屏） | 单列：棋盘在上，操作与记录在下的习惯布局 |
+| iPad（含分屏占据大部分时） | 左右分栏：棋盘在左、操作与棋谱记录在右，不用来回滚动；iOS 18 上导航还会自动变成左侧边栏 |
+| 训练 / 战绩页 | 列表按可用宽度自动分列，手机一列、iPad 两列 |
+
+判断条件用的是 `horizontalSizeClass == .regular && verticalSizeClass == .regular` ——
+只看宽度是不够的：**iPhone 横屏宽度同样是 `.regular`，但高度很紧**，那时候竖排反而更好用。
+
 ---
 
 ## 配置大模型

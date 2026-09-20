@@ -18,7 +18,7 @@ yarn-error.log*
 # 工程文件由 XcodeGen 从 ios/project.yml 生成，不纳入版本管理
 ios/*.xcodeproj/
 ios/*.xcworkspace/
-ios/build/
+ios/build*/
 DerivedData/
 *.xcuserstate
 xcuserdata/

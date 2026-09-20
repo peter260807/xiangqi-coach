@@ -34,13 +34,14 @@ struct BoardView: View {
     @ObservedObject var game: GameState
 
     var body: some View {
-        GeometryReader { geo in
-            let scale = geo.size.width / BoardMetrics.logicalW
-            Canvas { ctx, _ in
-                ctx.scaleBy(x: scale, y: scale)
-                draw(&ctx)
-            }
-            .frame(width: geo.size.width, height: geo.size.width / BoardMetrics.aspect)
+        // 直接让 Canvas 按可用空间取比例缩放。
+        // 原来套了一层 GeometryReader —— 它一定会填满给它的全部空间，
+        // 于是棋盘按宽度缩放后，下方留出一大片空白，把状态栏顶到屏幕最底部。
+        // Canvas 的闭包本身就能拿到可用尺寸，不需要 GeometryReader。
+        Canvas { ctx, size in
+            let scale = size.width / BoardMetrics.logicalW
+            ctx.scaleBy(x: scale, y: scale)
+            draw(&ctx)
         }
         .aspectRatio(BoardMetrics.aspect, contentMode: .fit)
     }
