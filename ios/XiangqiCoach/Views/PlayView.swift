@@ -81,28 +81,47 @@ struct PlayView: View {
         }
     }
 
-    /// 宽屏（iPad）：左右分栏，棋盘在左、控制与记录在右
+    /// 宽屏（iPad 横屏）：左右分栏。
+    ///
+    /// 尺寸不是拍脑袋定的：先按「减去胜率条与状态条之后还剩多少高度」
+    /// 反推出棋盘最多能多大，再让右栏吃掉剩下的**全部**宽度 ——
+    /// 这样左右两栏都不会剩下空白，棋盘也能顶到满高。
     private var wideLayout: some View {
-        HStack(alignment: .top, spacing: 20) {
-            VStack(spacing: 10) {
-                evalBar
-                boardArea
-                statusBar
-            }
-            .frame(maxWidth: 640)
+        GeometryReader { geo in
+            let padH: CGFloat = 20, gap: CGFloat = 18
+            let chrome: CGFloat = 150     // 胜率条 + 状态条 + 两条间距 + 上下内边距
+            let availH = max(240, geo.size.height - chrome)
+            let byHeight = availH * BoardMetrics.aspect
+            let byWidth = max(280, geo.size.width - padH * 2 - gap - 340)
+            let boardW = min(byHeight, byWidth)
+            let boardH = boardW / BoardMetrics.aspect
+            let panelW = max(320, geo.size.width - padH * 2 - gap - boardW)
 
-            ScrollView {
-                VStack(spacing: 8) {
-                    controls
-                    moveList
+            HStack(alignment: .center, spacing: gap) {
+                VStack(spacing: 10) {
+                    evalBar
+                    boardArea
+                        .frame(width: boardW, height: boardH)
+                    statusBar
                 }
-                .padding(.bottom, 32)
+                .frame(maxHeight: .infinity)
+
+                ScrollView {
+                    VStack(spacing: 8) {
+                        controls
+                        Spacer(minLength: 10)
+                        moveList
+                    }
+                    // 至少占满一屏高度：这样棋谱记录会贴到底部，
+                    // 不再全部堆在顶上、下面空一大片；记录多了照样能滚。
+                    .frame(minHeight: max(0, geo.size.height - 40))
+                }
+                .frame(width: panelW)
             }
-            // 给个区间而不是固定宽度：竖屏 iPad 宽度紧张时让出空间给棋盘
-            .frame(minWidth: 330, idealWidth: 380, maxWidth: 420)
+            .padding(.horizontal, padH)
+            .padding(.top, 6)
+            .padding(.bottom, 10)
         }
-        .padding(.horizontal, 22)
-        .padding(.top, 8)
     }
 
     // MARK: - 胜率条

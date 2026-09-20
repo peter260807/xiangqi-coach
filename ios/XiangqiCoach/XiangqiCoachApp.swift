@@ -31,20 +31,14 @@ struct RootView: View {
     @State private var showSettings = false
 
     var body: some View {
-        Group {
-            if #available(iOS 18.0, *) {
-                // iPad 上它会自动变成左侧边栏，更贴合 iPad 的使用习惯；
-                // iPhone 上仍然是底部标签栏
-                tabs.tabViewStyle(.sidebarAdaptable)
-            } else {
-                tabs
+        // 不用 .sidebarAdaptable：iPad 上侧边栏会吃掉约 250pt 宽度，
+        // 而这里最宝贵的就是棋盘的可用宽度；默认的顶部浮条只占高度、不占宽度。
+        tabs
+            .background(Palette.paper)
+            .sheet(isPresented: $showSettings) {
+                SettingsView(config: AIConfig.shared, archive: archive)
             }
-        }
-        .background(Palette.paper)
-        .sheet(isPresented: $showSettings) {
-            SettingsView(config: AIConfig.shared, archive: archive)
-        }
-        .onAppear { applyLaunchOverrides() }
+            .onAppear { applyLaunchOverrides() }
     }
 
     /// 三个页面。单独抽出来是为了按系统版本套不同样式
