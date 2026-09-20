@@ -1,8 +1,8 @@
 /* 大模型客户端联通性测试（会真实调用接口，耗时约 30~90 秒） */
-require('./engine.js');
-require('./config.js');
-var XQ = require('./engine.js');
-var AI = require('./ai.js');
+require('../web/js/engine.js');
+require('../web/js/config.js');
+var XQ = require('../web/js/engine.js');
+var AI = require('../web/js/ai.js');
 
 function line(s) { console.log(s); }
 

@@ -1,4 +1,4 @@
-const XQ = require('./engine.js');
+const XQ = require('../web/js/engine.js');
 
 function check(name, cond, extra) {
   console.log((cond ? 'PASS' : 'FAIL') + '  ' + name + (extra !== undefined ? '  -> ' + extra : ''));
@@ -73,7 +73,7 @@ ok &= check('照面时车不能离开中线', XQ.legalMoves(blocked, 'r').length
   XQ.legalMoves(blocked, 'r').length + ' < ' + XQ.legalMoves(free, 'r').length);
 
 // 9. 棋谱库全量校验
-const LIB = require('./library.js');
+const LIB = require('../web/js/library.js');
 const rep = LIB.validateLibrary();
 console.log('\n--- 棋谱库校验 ---');
 rep.mates.forEach(r => { ok &= check('杀法「' + r.name + '」红先成杀', r.pass, '最佳 ' + r.best + '，杀着数 ' + r.solutions); });
