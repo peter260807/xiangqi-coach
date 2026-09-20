@@ -66,6 +66,19 @@
       </select>
       <button class="jade span2" id="btnCoach">AI 点评局面</button>
       <button id="btnReview">AI 复盘</button>
+      <button class="span2" id="btnNotation">棋谱 / 导入导出</button>
+
+      <div class="demobar" id="demoBar" style="display:none">
+        <div class="demo-top">
+          <span id="demoLabel">看解法</span>
+          <span id="demoNote"></span>
+        </div>
+        <div class="demo-btns">
+          <button class="jade" id="btnDemoMain">看解法</button>
+          <button id="btnDemoNext">下一手</button>
+          <button id="btnDemoExit">退出</button>
+        </div>
+      </div>
     </div>
 
     <div class="card panel" id="panel">
@@ -179,6 +192,38 @@
       <button class="ghost" id="cfgRestore">恢复默认</button>
       <button class="primary" id="cfgSave">保存</button>
     </div>
+  </div>
+</div>
+
+<!-- ============ 棋谱导入导出 ============ -->
+<div class="overlay" id="ioOverlay">
+  <div class="sheet">
+    <h2>
+      <span>棋谱 / 导入导出</span>
+      <button class="tiny ghost" id="ioClose" style="width:auto">关闭</button>
+    </h2>
+
+    <div class="io-label">当前局面（FEN）</div>
+    <textarea class="io-field" id="ioFen" rows="3" readonly></textarea>
+
+    <div class="io-label">棋谱</div>
+    <textarea class="io-field" id="ioMoves" rows="3" readonly></textarea>
+
+    <div class="io-label">着法坐标串（最不容易出差错的一种形式）</div>
+    <textarea class="io-field" id="ioCoords" rows="2" readonly></textarea>
+
+    <div class="io-row">
+      <button id="ioCopy">复制全部</button>
+      <button class="ghost" id="ioShare">系统分享</button>
+    </div>
+
+    <div class="io-label">导入：粘贴 FEN 局面串、中文棋谱，或坐标串</div>
+    <textarea class="io-field" id="ioInput" rows="4" placeholder="rnbakabnr/........./.c.....c.&#10;或  炮二平五 马8进7 马二进三&#10;或  67,40,19,46"></textarea>
+    <div class="io-row">
+      <button class="primary" id="ioImport">导入</button>
+      <button class="ghost" id="ioClear">清空</button>
+    </div>
+    <div class="io-note" id="ioMsg" style="display:none"></div>
   </div>
 </div>
 

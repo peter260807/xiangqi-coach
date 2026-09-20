@@ -29,6 +29,8 @@ targets:
     settings:
       base:
         PRODUCT_NAME: 象棋教练
+        # 显示名可以是中文，但模块名必须是 ASCII —— 否则 `@testable import` 无法书写
+        PRODUCT_MODULE_NAME: XiangqiCoach
         PRODUCT_BUNDLE_IDENTIFIER: com.peter260807.xiangqicoach
         # 1 = iPhone, 2 = iPad
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -37,13 +39,35 @@ targets:
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: 需要访问相册，用来读取棋盘照片并识别局面。
+        INFOPLIST_KEY_NSCameraUsageDescription: 需要访问相机，用来拍摄棋盘并识别局面。
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+
+  XiangqiCoachTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: XiangqiCoachTests
+    dependencies:
+      - target: XiangqiCoach
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.peter260807.xiangqicoach.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/象棋教练.app/象棋教练"
+        BUNDLE_LOADER: "$(TEST_HOST)"
 
 schemes:
   XiangqiCoach:
     build:
       targets:
         XiangqiCoach: all
+        XiangqiCoachTests: [test]
     run:
       config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - XiangqiCoachTests

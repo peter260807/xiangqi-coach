@@ -48,6 +48,22 @@ struct RootView: View {
         .sheet(isPresented: $showSettings) {
             SettingsView(config: AIConfig.shared, archive: archive)
         }
+        .onAppear { applyLaunchOverrides() }
+    }
+
+    /// 自动化截图用的启动钩子：
+    /// `SIMCTL_CHILD_START_SCENE=classic:c1` 载入指定场景，
+    /// 再给个 `SIMCTL_CHILD_START_DEMO=1` 就自动开始打谱演示。
+    private func applyLaunchOverrides() {
+        let env = ProcessInfo.processInfo.environment
+        guard let sid = env["START_SCENE"],
+              let scene = SceneCatalog.all(game.library).first(where: { $0.id == sid })
+        else { return }
+        game.load(scene: scene, silent: true)
+        if env["START_DEMO"] == "1" {
+            game.startDemo()
+            game.demoToggle()   // 顺手开始播放，截图才能拍到演示中间的画面
+        }
     }
 }
 

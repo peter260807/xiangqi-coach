@@ -11,6 +11,8 @@ struct PlayView: View {
     @State private var panelBusy = false
     @State private var askText = ""
     @State private var showAskField = false
+    /// 自动化截图时可用 SIMCTL_CHILD_START_NOTATION=1 直接打开棋谱面板
+    @State private var showNotation = ProcessInfo.processInfo.environment["START_NOTATION"] == "1"
 
     private var scenes: [XQScene] { SceneCatalog.all(game.library) }
 
@@ -47,12 +49,18 @@ struct PlayView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button { showSettings = true } label: {
-                    Image(systemName: "gearshape")
+                HStack(spacing: 16) {
+                    Button { showNotation = true } label: {
+                        Image(systemName: "square.and.arrow.up.on.square")
+                    }
+                    Button { showSettings = true } label: {
+                        Image(systemName: "gearshape")
+                    }
                 }
             }
         }
         .sheet(isPresented: $showCoach) { coachSheet }
+        .sheet(isPresented: $showNotation) { NotationSheet(game: game) }
     }
 
     // MARK: - 胜率条
@@ -157,6 +165,9 @@ struct PlayView: View {
                 actionButton("重开", icon: "arrow.clockwise") { game.load(scene: game.scene) }
             }
 
+            // 有谱可演的场景才出现：名局全谱、杀法解法、开局谱
+            if game.canDemo || game.demoMode { demoBar }
+
             sceneMenu
 
             HStack(spacing: 8) {
@@ -198,6 +209,63 @@ struct PlayView: View {
                             .stroke(Palette.line, lineWidth: 0.5))
                 }
                 .disabled(panelBusy)
+            }
+        }
+    }
+
+    /// 打谱演示控制条
+    private var demoBar: some View {
+        VStack(spacing: 8) {
+            if game.demoMode {
+                HStack {
+                    Text("演示 \(game.demoDone)/\(game.demoTotal)")
+                        .font(.system(size: 11)).foregroundStyle(Palette.ink3)
+                    Spacer()
+                    ProgressView(value: Double(game.demoDone), total: Double(max(1, game.demoTotal)))
+                        .frame(maxWidth: 130)
+                }
+                HStack(spacing: 8) {
+                    Button {
+                        game.demoToggle()
+                    } label: {
+                        Label(game.demoPlaying ? "暂停" : "播放",
+                              systemImage: game.demoPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                            .background(Palette.jade)
+                            .foregroundStyle(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                    actionButton("下一手", icon: "forward.frame") {
+                        if !game.demoPlaying { game.demoStep() }
+                    }
+                    actionButton("退出", icon: "xmark") { game.exitDemo() }
+                }
+                if !game.demoNote.isEmpty {
+                    Text(game.demoNote)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Palette.ink2)
+                        .lineSpacing(3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(Palette.jadeSoft)
+                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
+            } else {
+                Button {
+                    game.startDemo()
+                } label: {
+                    Label("看解法（逐步演示这段谱）", systemImage: "play.rectangle")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 11)
+                        .background(Palette.card)
+                        .foregroundStyle(Palette.ink)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Palette.line, lineWidth: 0.5))
+                }
             }
         }
     }

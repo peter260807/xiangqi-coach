@@ -9,6 +9,8 @@ struct MoveEval: Codable {
     var grade: String      // ok / inaccuracy / mistake / blunder
     var bestLabel: String
     var phase: String      // opening / mid / end
+    /// 这一手原本有杀棋却没能走出来。用可选类型是为了让加字段之前的旧存档仍能解码。
+    var missedMate: Bool?
 }
 
 struct GameFlags: Codable {
@@ -204,7 +206,7 @@ final class Archive: ObservableObject {
 
                 completion(MoveEval(ply: 0, redScore: actual, loss: loss, grade: grade,
                                     bestLabel: best.move.map { Notation.label(board: board, move: $0) } ?? "",
-                                    phase: phase))
+                                    phase: phase, missedMate: missedMate))
             }
         }
     }
@@ -232,6 +234,11 @@ final class Archive: ObservableObject {
     }
 
     func computeAbilities(mateTotal: Int) -> AbilityReport {
+        Archive.abilities(games: games, solvedIds: solvedDrills, mateTotal: mateTotal)
+    }
+
+    /// 能力画像的纯函数实现 —— 不读磁盘，方便单元测试直接喂数据。
+    static func abilities(games: [GameRecord], solvedIds: Set<String>, mateTotal: Int) -> AbilityReport {
         var rep = AbilityReport()
         let withEval = games.filter { !$0.evals.isEmpty }
 
@@ -258,7 +265,7 @@ final class Archive: ObservableObject {
             }
         }
 
-        let solved = solvedDrills.count
+        let solved = solvedIds.count
         let ratio = mateTotal > 0 ? Double(solved) / Double(mateTotal) : 0
 
         let attack = max(0, min(100, Int((ratio * 100).rounded()) - min(35, missed * 7)))
@@ -306,7 +313,14 @@ final class Archive: ObservableObject {
     // MARK: 针对性训练
 
     func recommendDrills(library: XiangqiLibrary, limit: Int = 3) -> [Drill] {
-        let rep = computeAbilities(mateTotal: library.mates.count)
+        Archive.drills(games: games, solvedIds: solvedDrills, library: library, limit: limit)
+    }
+
+    /// 训练推荐的纯函数实现 —— 不读磁盘，测试可直接喂数据。
+    static func drills(games: [GameRecord], solvedIds: Set<String>,
+                       library: XiangqiLibrary, limit: Int = 3) -> [Drill] {
+        let solvedDrills = solvedIds      // 桥接，函数体沿用原来的变量名
+        let rep = abilities(games: games, solvedIds: solvedIds, mateTotal: library.mates.count)
 
         // 完全没有数据时给一套新手起步组合
         if !rep.hasData {

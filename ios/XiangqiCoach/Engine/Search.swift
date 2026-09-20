@@ -453,6 +453,43 @@ final class Engine {
         }
     }
 
+    /// 同步搜索。仅供测试与需要就地取结果的场景使用 ——
+    /// 会阻塞调用线程，界面代码请一律走上面的异步接口。
+    func searchSync(board: [Int8], side: Side, maxDepth: Int, timeMs: Int) -> SearchResult {
+        queue.sync {
+            self.prepare()
+            return self.rootSearch(board: board, side: side, maxDepth: maxDepth, timeMs: timeMs, excluded: [])
+        }
+    }
+
+    /// 同步多路分析，同上
+    func topMovesSync(board: [Int8], side: Side, count: Int, maxDepth: Int, timeMs: Int) -> [CandidateMove] {
+        queue.sync {
+            self.prepare()
+            var excluded: [Move] = []
+            var out: [CandidateMove] = []
+            let budget = max(400, timeMs)
+            for i in 0..<count {
+                let slice = max(300, budget / (count - i))
+                let r = self.rootSearch(board: board, side: side, maxDepth: maxDepth, timeMs: slice, excluded: excluded)
+                guard let mv = r.move else { break }
+                out.append(CandidateMove(move: mv, score: r.score, depth: r.depth,
+                                         label: Notation.label(board: board, move: mv)))
+                excluded.append(mv)
+                if abs(r.score) > Engine.mate - 1000 { break }
+            }
+            return out
+        }
+    }
+
+    /// 重置内部状态（测试用，避免用例之间通过置换表互相影响）
+    func resetForTesting() {
+        queue.sync {
+            self.prepare()
+            for i in 0..<tt.count { tt[i] = TTEntry() }
+        }
+    }
+
     /// 多路分析：给出前 n 个候选着法，供教练点评与「让模型选一个」使用
     func topMoves(board: [Int8], side: Side, count: Int, maxDepth: Int, timeMs: Int, completion: @escaping ([CandidateMove]) -> Void) {
         queue.async {
@@ -479,7 +516,7 @@ final class Engine {
             self.prepare()
             let res = self.rootSearch(board: board, side: side, maxDepth: level.depth, timeMs: level.timeMs, excluded: [])
 
-            guard let picked = res.move, level.slack > 0 else {
+            guard res.move != nil, level.slack > 0 else {
                 DispatchQueue.main.async { completion(res) }
                 return
             }

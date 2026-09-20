@@ -21,6 +21,10 @@
   var btnCoach = $('btnCoach'), btnReview = $('btnReview'), btnSettings = $('btnSettings');
   var panel = $('panel'), panelTitle = $('panelTitle'), panelBody = $('panelBody'), panelFoot = $('panelFoot');
   var overlay = $('overlay');
+  var demoBar = $('demoBar'), demoLabel = $('demoLabel'), demoNoteEl = $('demoNote');
+  var btnDemoMain = $('btnDemoMain'), btnDemoNext = $('btnDemoNext'), btnDemoExit = $('btnDemoExit');
+  var btnNotation = $('btnNotation');
+  var ioOverlay = $('ioOverlay'), ioMsg = $('ioMsg');
 
   /* ---------- 状态 ---------- */
   var board, turn, history, legal, selected, lastMove, hintMove;
@@ -102,9 +106,113 @@
 
   /* ---------- 场景 ---------- */
 
+  /* ---------- 打谱演示 ---------- */
+
+  /* 名局全谱 / 杀法解法 / 开局谱都能逐步演示。
+     演示期间不接受落子，也不叫电脑走棋 —— 纯看谱。 */
+  var demo = { on: false, playing: false, index: 0, moves: [], labels: [], notes: {}, note: '', timer: 0 };
+
+  function resetDemo() {
+    clearTimeout(demo.timer);
+    demo.timer = 0;
+    demo.on = false; demo.playing = false; demo.index = 0;
+    demo.moves = []; demo.labels = []; demo.notes = {}; demo.note = '';
+  }
+
+  /* 把一段棋谱文本解析成着法序列。解析不出来的部分直接截断，不抛错。 */
+  function demoPrepare(labels, highlights) {
+    demo.labels = (labels || []).filter(function (t) { return t && t.length; });
+    demo.notes = {};
+    (highlights || []).forEach(function (h) { demo.notes[h.ply] = h.text; });
+
+    demo.moves = [];
+    var sb = XQ.parseBoard(startFen), side = 'r';
+    for (var i = 0; i < demo.labels.length; i++) {
+      var m = XQ.findMoveByLabel(sb, side, demo.labels[i]);
+      if (!m) break;
+      demo.moves.push(m);
+      XQ.makeMove(sb, m);
+      side = XQ.other(side);
+    }
+    demo.index = 0;
+    demo.note = '';
+  }
+
+  function startDemo() {
+    if (!demo.moves.length) return;
+    loadScene(sceneId, true);
+    demo.on = true;
+    demo.index = 0;
+    demo.note = '';
+    setStatus('<span class="dot red"></span><span>打谱演示：<b>' + sceneName + '</b>　共 '
+      + demo.moves.length + ' 手，点「播放」开始</span>', false);
+    renderDemo();
+    render();
+  }
+
+  function demoStep() {
+    if (!demo.on || demo.index >= demo.moves.length) {
+      demo.playing = false;
+      renderDemo();
+      return;
+    }
+    var m = demo.moves[demo.index];
+    demo.index++;
+    demo.note = demo.notes[demo.index] || '';
+    playMove(m, { track: false });
+  }
+
+  function demoToggle() {
+    if (!demo.on) { startDemo(); return; }
+    if (demo.playing) {
+      demo.playing = false;
+      clearTimeout(demo.timer);
+      renderDemo();
+      return;
+    }
+    if (demo.index >= demo.moves.length) startDemo();
+    demo.playing = true;
+    demoStep();
+    renderDemo();
+  }
+
+  function exitDemo() {
+    clearTimeout(demo.timer);
+    demo.playing = false; demo.on = false; demo.index = 0;
+    loadScene(sceneId, true);
+    toast('已退出演示', '', 1400);
+  }
+
+  function demoStatusHtml() {
+    var tail = demo.note ? '　<b>' + demo.note + '</b>' : '';
+    return '<span class="dot red"></span><span>打谱演示 '
+      + demo.index + '/' + demo.moves.length + tail + '</span>';
+  }
+
+  function renderDemo() {
+    if (!demoBar) return;
+    var has = demo.moves.length > 0 || demo.on;
+    demoBar.style.display = has ? '' : 'none';
+    if (!has) return;
+
+    demoLabel.textContent = demo.on
+      ? ('演示 ' + demo.index + '/' + demo.moves.length)
+      : ('看解法（共 ' + demo.moves.length + ' 手）');
+    demoNoteEl.textContent = demo.on ? (demo.note || '') : '';
+
+    btnDemoMain.textContent = demo.on ? (demo.playing ? '暂停' : '播放') : '看解法';
+    btnDemoNext.style.display = demo.on ? '' : 'none';
+    btnDemoExit.style.display = demo.on ? '' : 'none';
+    btnDemoNext.disabled = demo.playing || demo.index >= demo.moves.length;
+  }
+
+  /* ---------- 场景 ---------- */
+
   function buildScenes() {
     var html = '<optgroup label="对局"><option value="start">标准开局（红先）</option></optgroup>';
-    html += '<optgroup label="杀法练习（红先成杀）">';
+    html += '<optgroup label="名局（可逐步演示）">';
+    (XQLIB.CLASSICS || []).forEach(function (c) { html += '<option value="classic:' + c.id + '">' + c.name + '</option>'; });
+    html += '</optgroup><optgroup label="杀法练习（红先成杀）">';
     XQLIB.MATES.forEach(function (m) { html += '<option value="mate:' + m.id + '">' + m.name + '</option>'; });
     html += '</optgroup><optgroup label="开局库（标准着法）">';
     XQLIB.OPENINGS.forEach(function (o) { html += '<option value="opening:' + o.id + '">' + o.name + '</option>'; });
@@ -121,16 +229,23 @@
     pending = null; aiBusy = false;
     XQBOARD.cancelAnim();
     turn = 'r';
+    resetDemo();
     var note = '';
 
     if (id === 'start') {
       startFen = XQ.START; board = XQ.parseBoard(startFen); sceneName = '标准开局';
       note = '红先行。初学者可以先试「炮二平五」抢占中路。';
+    } else if (id.indexOf('classic:') === 0) {
+      var c = XQLIB.findById(XQLIB.CLASSICS, id.slice(8));
+      startFen = XQ.START; board = XQ.parseBoard(startFen); sceneName = '名局 · ' + c.name;
+      note = c.source + '\n\n' + c.desc;
+      demoPrepare(c.line.split(/\s+/), c.highlights || []);
     } else if (id.indexOf('mate:') === 0) {
       var m = XQLIB.findById(XQLIB.MATES, id.slice(5));
       startFen = m.fen; board = XQ.parseBoard(startFen); sceneName = '杀法 · ' + m.name;
-      note = m.idea + '\n\n轮到你走，找出成杀的那一步。想不出来就点「提示」。';
+      note = m.idea + '\n\n轮到你走，找出成杀的那一步。想不出来就点「提示」，或用「看解法」逐步演示。';
       XQSTORE.markDrillAttempt(id);
+      demoPrepare(m.line || [], []);
     } else if (id.indexOf('study:') === 0) {
       var s = XQLIB.findById(XQLIB.STUDIES, id.slice(6));
       startFen = s.fen; board = XQ.parseBoard(startFen); sceneName = '残局 · ' + s.name;
@@ -148,7 +263,8 @@
         lastMove = mv;
         turn = XQ.other(turn);
       }
-      note = o.desc + '\n\n已按谱走完 ' + res.moves.length + ' 着，可以用「悔棋」逐步回看。';
+      note = o.desc + '\n\n已按谱走完 ' + res.moves.length + ' 着，可以用「看解法」逐步演示整段。';
+      demoPrepare(o.line.split(/\s+/), []);
     }
 
     record = XQSTORE.createGame({
@@ -162,6 +278,7 @@
     setStatus('<span class="dot red"></span><span>轮到<b>你</b>走（红方）—— ' + sceneName + '</span>', false);
     if (!silent && note) showPanel('当前场景', note);
     render();
+    renderDemo();
     renderTraining();
     renderStats();
   }
@@ -216,6 +333,26 @@
   }
 
   function onMoveSettled() {
+    /* 打谱演示：走完一手就把节奏交回给播放器 —— 不做逐手分析，也不叫电脑走棋 */
+    if (demo.on) {
+      if (demo.playing && demo.index < demo.moves.length) {
+        setStatus(demoStatusHtml(), false);
+        clearTimeout(demo.timer);
+        demo.timer = setTimeout(function () {
+          if (!demo.playing || !demo.on) return;
+          demoStep();
+        }, 620);
+      } else if (demo.playing) {
+        demo.playing = false;
+        setStatus('<span class="dot red"></span><span>演示结束（共 ' + demo.moves.length + ' 手）</span>', false);
+      } else {
+        setStatus(demoStatusHtml(), false);
+      }
+      renderDemo();
+      render();
+      return;
+    }
+
     var nowSide = turn;
     if (!XQ.hasLegalMove(board, nowSide)) {
       finishGame(nowSide);
@@ -392,7 +529,7 @@
   /* ---------- 棋盘交互 ---------- */
 
   function onTap(clientX, clientY) {
-    if (gameOver || thinking || animating || turn !== 'r') return;
+    if (gameOver || thinking || animating || demo.on || turn !== 'r') return;
     var i = XQBOARD.squareAt(clientX, clientY);
     if (i < 0) return;
 
@@ -828,6 +965,219 @@
   function openSettings() { fillSettings(); overlay.className = 'overlay on'; }
   function closeSettings() { overlay.className = 'overlay'; }
   btnSettings.onclick = openSettings;
+
+  /* ---------- 打谱演示按钮 ---------- */
+
+  btnDemoMain.onclick = function () { demoToggle(); };
+  btnDemoNext.onclick = function () { if (!demo.playing) demoStep(); };
+  btnDemoExit.onclick = function () { exitDemo(); };
+
+  /* ---------- 棋谱导入导出 ---------- */
+
+  function copyText(text, cb) {
+    var fallback = function () {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      return ok;
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { cb(true); }, function () { cb(fallback()); });
+    } else cb(fallback());
+  }
+
+  function ioShow(text, kind) {
+    ioMsg.textContent = text || '';
+    ioMsg.style.display = text ? '' : 'none';
+    ioMsg.className = 'io-note ' + (kind || '');
+  }
+
+  function ioShareText() {
+    var out = ['象棋教练 · ' + sceneName, '', '【初始局面】', startFen];
+    var mt = $('ioMoves').value;
+    if (mt) out.push('', '【棋谱】', mt, '', '【着法坐标】', $('ioCoords').value);
+    out.push('', '【当前局面】', XQ.boardToString(board));
+    return out.join('\n');
+  }
+
+  function ioRefresh() {
+    $('ioFen').value = XQ.boardToString(board);
+    $('ioMoves').value = XQ.movesToText(startFen, history.map(function (h) { return h.m; }));
+    $('ioCoords').value = history.map(function (h) { return h.m[0] + ',' + h.m[1]; }).join(',');
+  }
+
+  function openIO() {
+    ioRefresh();
+    ioShow('', '');
+    ioOverlay.className = 'overlay on';
+  }
+  function closeIO() { ioOverlay.className = 'overlay'; }
+
+  btnNotation.onclick = openIO;
+  $('ioClose').onclick = closeIO;
+  ioOverlay.addEventListener('click', function (e) { if (e.target === ioOverlay) closeIO(); });
+  $('ioClear').onclick = function () { $('ioInput').value = ''; ioShow('', ''); };
+
+  $('ioCopy').onclick = function () {
+    copyText(ioShareText(), function (ok) {
+      ioShow(ok ? '已复制到剪贴板。' : '复制失败，请长按文本框手动选择。', ok ? 'ok' : 'err');
+    });
+  };
+
+  $('ioShare').onclick = function () {
+    var text = ioShareText();
+    if (navigator.share) {
+      navigator.share({ title: '象棋教练 · ' + sceneName, text: text })['catch'](function () {});
+    } else {
+      copyText(text, function (ok) {
+        ioShow(ok ? '当前浏览器不支持系统分享，已复制到剪贴板。' : '分享不可用。', ok ? 'ok' : 'err');
+      });
+    }
+  };
+
+  $('ioImport').onclick = function () {
+    var err = importText($('ioInput').value);
+    if (err) ioShow(err, 'err');
+    else { ioShow('导入成功，已切换到这个局面。', 'ok'); ioRefresh(); }
+  };
+
+  /* 校验并规范化一个局面串。返回 null 表示这不是一个可用局面。 */
+  function validateFEN(s) {
+    var str = String(s || '').trim();
+    var rows = str.split('/');
+    if (rows.length !== 10) return null;
+    for (var i = 0; i < 10; i++) {
+      if (rows[i].length !== 9) return null;
+      if (!/^[KABNRCPkabnrcp.]+$/.test(rows[i])) return null;
+    }
+    var b = XQ.parseBoard(str);
+    var kr = -1, kb = -1, rk = 0, bk = 0;
+    for (var j = 0; j < 90; j++) {
+      if (b[j] === 'K') { kr = j; rk++; }
+      else if (b[j] === 'k') { kb = j; bk++; }
+    }
+    /* 必须恰好一个帅一个将，而且都在九宫里 —— 否则引擎会算出离谱的结果 */
+    if (rk !== 1 || bk !== 1) return null;
+    var rr = (kr / 9) | 0, rc = kr % 9;
+    if (rr < 7 || rc < 3 || rc > 5) return null;
+    var br = (kb / 9) | 0, bc = kb % 9;
+    if (br > 2 || bc < 3 || bc > 5) return null;
+    if (XQ.kingsFacing(b)) return null;
+    return XQ.boardToString(b);
+  }
+
+  /* 导入统一走这里，返回 null 表示成功，否则返回给用户看的说明 */
+  function importText(raw) {
+    var text = String(raw || '').trim();
+    if (!text) return '没有内容可导入。';
+
+    /* ① 局面串 */
+    var tokens = text.split(/[\s,，、;；]+/);
+    for (var i = 0; i < tokens.length; i++) {
+      var fen = validateFEN(tokens[i].replace(/[：:。()（）]/g, ''));
+      if (fen) { applyImportedFen(fen); return null; }
+    }
+
+    /* ② 中文棋谱 */
+    var labels = text.split(/\s+/).filter(function (t) { return /[平进退]/.test(t); });
+    if (labels.length) return applyImportedMoves(labels);
+
+    /* ③ 着法坐标 */
+    var nums = (text.match(/\d+/g) || []).map(Number);
+    if (nums.length >= 2 && nums.length % 2 === 0
+        && nums.every(function (n) { return n >= 0 && n < 90; })) {
+      return applyImportedCoords(nums);
+    }
+    return '没认出可导入的内容。\n\n可以粘贴：\n· FEN 局面串\n· 中文棋谱，如「炮二平五 马8进7」\n· 着法坐标，如「67,40,19,46」';
+  }
+
+  function resetForImport() {
+    history = []; selected = -1; lastMove = null; hintMove = null;
+    thinking = false; gameOver = false; redScore = 0; animating = false;
+    pending = null; aiBusy = false;
+    turn = 'r';
+    resetDemo();
+    XQBOARD.cancelAnim();
+  }
+
+  function applyImportedFen(fen) {
+    sceneId = 'custom';
+    sceneName = '导入的局面';
+    startFen = fen;
+    board = XQ.parseBoard(fen);
+    resetForImport();
+    record = XQSTORE.createGame({
+      sceneId: sceneId, sceneName: sceneName, level: selLevel.value,
+      mode: selMode.value, startFen: startFen
+    });
+    refreshLegal(); updateEval(); render(); renderDemo(); renderTraining(); renderStats();
+    setStatus('<span class="dot red"></span><span>已导入局面，轮到<b>你</b>走（红方）</span>', false);
+  }
+
+  function installImported(moves, note) {
+    sceneId = 'custom';
+    sceneName = '导入的棋谱';
+    startFen = XQ.START;
+    board = XQ.parseBoard(startFen);
+    resetForImport();
+    for (var i = 0; i < moves.length; i++) {
+      var mv = moves[i];
+      var label = XQ.moveLabel(board, mv);
+      var cap = XQ.makeMove(board, mv);
+      history.push({ m: [mv[0], mv[1]], cap: cap, label: label, side: turn });
+      lastMove = mv;
+      turn = XQ.other(turn);
+    }
+    record = XQSTORE.createGame({
+      sceneId: sceneId, sceneName: sceneName, level: selLevel.value,
+      mode: selMode.value, startFen: startFen
+    });
+    history.forEach(function (h) { record.moves.push([h.m[0], h.m[1]]); record.ply++; });
+    refreshLegal(); updateEval(); render(); renderDemo(); renderTraining(); renderStats();
+    setStatus('<span class="dot red"></span><span>' + note + '</span>', false);
+  }
+
+  function applyImportedMoves(labels) {
+    var b = XQ.parseBoard(XQ.START), side = 'r', applied = [], rejected = null;
+    for (var i = 0; i < labels.length; i++) {
+      var m = XQ.findMoveByLabel(b, side, labels[i]);
+      if (!m) { rejected = labels[i]; break; }
+      applied.push(m);
+      XQ.makeMove(b, m);
+      side = XQ.other(side);
+    }
+    if (!applied.length) return '第一手「' + (rejected || labels[0]) + '」从标准开局走不通。';
+    installImported(applied, rejected
+      ? '已按棋谱走 ' + applied.length + ' 手；「' + rejected + '」之后的着法没认出来，停在合法处。'
+      : '已按棋谱走完 ' + applied.length + ' 手。');
+    return null;
+  }
+
+  function applyImportedCoords(nums) {
+    var b = XQ.parseBoard(XQ.START), side = 'r', applied = [];
+    for (var i = 0; i + 1 < nums.length; i += 2) {
+      var legal = XQ.legalMoves(b, side), hit = null;
+      for (var j = 0; j < legal.length; j++) {
+        if (legal[j][0] === nums[i] && legal[j][1] === nums[i + 1]) { hit = legal[j]; break; }
+      }
+      if (!hit) {
+        if (!applied.length) return '第一手「' + nums[i] + '→' + nums[i + 1] + '」在当前局面不合法。';
+        break;
+      }
+      applied.push(hit);
+      XQ.makeMove(b, hit);
+      side = XQ.other(side);
+    }
+    if (!applied.length) return '没能识别出任何合法着法。';
+    installImported(applied, '按坐标导入，共 ' + applied.length + ' 手。');
+    return null;
+  }
   $('cfgCancel').onclick = closeSettings;
   overlay.addEventListener('click', function (e) { if (e.target === overlay) closeSettings(); });
 
@@ -910,6 +1260,23 @@
     },
     scene: loadScene,
     tab: goTab,
-    save: function () { btnSave.onclick(); }
+    save: function () { btnSave.onclick(); },
+    demo: {
+      start: startDemo, step: demoStep, toggle: demoToggle, exit: exitDemo,
+      state: function () {
+        return {
+          on: demo.on, playing: demo.playing, index: demo.index,
+          total: demo.moves.length, note: demo.note, labels: demo.labels.slice()
+        };
+      }
+    },
+    io: {
+      open: openIO, close: closeIO, refresh: ioRefresh,
+      import: importText, exportText: ioShareText, validateFEN: validateFEN,
+      fields: function () {
+        ioRefresh();   // 先刷新，保证拿到的是当前局面而不是上次打开面板时的快照
+        return { fen: $('ioFen').value, moves: $('ioMoves').value, coords: $('ioCoords').value };
+      }
+    }
   };
 })();

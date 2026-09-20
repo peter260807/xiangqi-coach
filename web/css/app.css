@@ -267,6 +267,60 @@ canvas#board {
 .controls .span2 { grid-column: span 2; }
 .controls .span3 { grid-column: span 3; }
 
+/* 打谱演示控制条：占满整行 */
+.demobar {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.demobar .demo-top {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--faint);
+  text-align: left;
+}
+.demobar .demo-top #demoNote {
+  flex: 1;
+  color: var(--ink);
+  line-height: 1.45;
+}
+.demobar .demo-btns { display: flex; gap: 8px; }
+.demobar .demo-btns button { flex: 1; }
+
+/* 导入导出面板 */
+.io-field {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--ink);
+  resize: vertical;
+  text-align: left;
+}
+.io-label {
+  font-size: 12px;
+  color: var(--faint);
+  margin: 12px 0 6px;
+  text-align: left;
+}
+.io-label:first-child { margin-top: 0; }
+.io-row { display: flex; gap: 8px; margin-top: 10px; }
+.io-note { font-size: 12px; margin-top: 8px; text-align: left; }
+.io-note.ok { color: var(--jade); }
+.io-note.err { color: var(--red); }
+
 button, select, input, textarea {
   font-family: inherit;
   font-size: 13px;

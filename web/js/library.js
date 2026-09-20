@@ -15,6 +15,7 @@
   var MATES = DATA.mates || [];
   var OPENINGS = DATA.openings || [];
   var STUDIES = DATA.studies || [];
+  var CLASSICS = DATA.classics || [];
 
   /* 把一条棋谱文本（如「炮二平五 马8进7」）逐步落到棋盘上，顺带校验合法性 */
   function resolveLine(line, startFen) {
@@ -52,7 +53,7 @@
 
   /* 校验全部棋谱条目；测试与界面共用，返回结构化报告 */
   function validateLibrary() {
-    var report = { mates: [], openings: [], studies: [], ok: true };
+    var report = { mates: [], openings: [], studies: [], classics: [], ok: true };
 
     MATES.forEach(function (p) {
       var b = XQ.parseBoard(p.fen);
@@ -91,6 +92,25 @@
       report.studies.push(r);
     });
 
+    /* 名局：逐手校验，并且要求最后一手确实构成将死 */
+    CLASSICS.forEach(function (c) {
+      var res = resolveLine(c.line);
+      var r = { id: c.id, name: c.name, moves: res.moves.length, error: res.error };
+      if (!res.error && res.moves.length > 0) {
+        var b = XQ.parseBoard(XQ.START);
+        var side = 'r';
+        for (var i = 0; i < res.moves.length; i++) {
+          XQ.makeMove(b, res.moves[i]);
+          side = XQ.other(side);
+        }
+        r.mated = !XQ.hasLegalMove(b, side);
+        r.checked = XQ.inCheck(b, side);
+      }
+      r.pass = !res.error && res.moves.length > 0 && r.mated === true && r.checked === true;
+      if (!r.pass) report.ok = false;
+      report.classics.push(r);
+    });
+
     return report;
   }
 
@@ -101,7 +121,7 @@
   }
 
   var api = {
-    MATES: MATES, OPENINGS: OPENINGS, STUDIES: STUDIES,
+    MATES: MATES, OPENINGS: OPENINGS, STUDIES: STUDIES, CLASSICS: CLASSICS,
     findById: findById,
     resolveLine: resolveLine, matingMoves: matingMoves, validateLibrary: validateLibrary
   };

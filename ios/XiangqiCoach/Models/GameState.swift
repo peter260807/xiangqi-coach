@@ -81,6 +81,14 @@ final class GameState: ObservableObject {
         thinking = false
         animating = false
         pendingAnalysis = nil
+        // 换场景就退出演示，避免上一局的演示序列串到新局面上
+        demoTicker?.cancel()
+        demoTicker = nil
+        demoPlaying = false
+        demoMode = false
+        demoTotal = 0
+        demoDone = 0
+        demoNote = ""
 
         var fen = Rules.parse(newScene.startFEN)
         for m in resolved.moves {
@@ -113,7 +121,8 @@ final class GameState: ObservableObject {
     // MARK: - 走子
 
     func tap(square i: Int) {
-        guard !gameOver, !thinking, !animating, turn == .red else { return }
+        // 演示进行中不接受落子，免得和自动走子打架
+        guard !gameOver, !thinking, !animating, !demoMode, turn == .red else { return }
         if selected >= 0 {
             if let m = targets.first(where: { $0.to == i }) {
                 play(move: m, track: true)
@@ -200,6 +209,14 @@ final class GameState: ObservableObject {
     }
 
     private func onMoveSettled() {
+        // 打谱演示：走完一手就把节奏交回给播放器 —— 不做逐手分析，也不叫电脑走棋
+        if demoMode {
+            if scheduleDemoNextIfNeeded() { return }
+            statusText = "打谱演示 \(demoDone)/\(demoTotal)"
+                + (demoNote.isEmpty ? "" : "　" + demoNote)
+            statusWarn = false
+            return
+        }
         if !Rules.hasLegalMove(board, turn) {
             finish(loser: turn)
             return
@@ -261,7 +278,11 @@ final class GameState: ObservableObject {
             } else if e.grade == "inaccuracy" {
                 self.collectedFlags.inaccuracies += 1
             }
-            if e.redScore > Engine.mate - 1000 && e.loss == 0 { /* 已杀，无需特别标记 */ }
+            // 本来有杀棋却没走出来 —— 这正是「攻杀把握」维度要扣分的行为。
+            // 之前这里只留了一句空注释、没有累加计数，导致该维度永远拿满分。
+            if e.missedMate == true {
+                self.collectedFlags.missedMate += 1
+            }
             self.persistRecord()
         }
     }
@@ -368,6 +389,292 @@ final class GameState: ObservableObject {
             self.statusWarn = false
             completion?(cands)
         }
+    }
+
+    // MARK: - 打谱演示
+
+    @Published var demoMode = false
+    @Published var demoTotal = 0
+    @Published var demoDone = 0
+    @Published var demoPlaying = false
+    @Published var demoNote = ""
+    private var demoMoves: [Move] = []
+    private var demoTicker: Task<Void, Never>?
+
+    var canDemo: Bool { scene.canDemo }
+
+    /// 进入打谱演示：先把局面复位，再把整段棋谱解析成着法序列。
+    /// 演示期间不接受落子、也不叫电脑走棋，纯看谱。
+    func startDemo() {
+        guard scene.canDemo, !thinking else { return }
+        demoTicker?.cancel()
+        demoPlaying = false
+
+        load(scene: scene, silent: true)
+
+        var b = Rules.parse(scene.startFEN)
+        var side: Side = .red
+        var moves: [Move] = []
+        for label in scene.demoLine {
+            guard let m = Notation.findMove(board: b, side: side, text: label) else { break }
+            moves.append(m)
+            _ = Rules.makeMove(&b, m)
+            side = side.other
+        }
+        guard !moves.isEmpty else {
+            showToast("这段棋谱解析不出着法", kind: "")
+            return
+        }
+
+        demoMoves = moves
+        demoTotal = moves.count
+        demoDone = 0
+        demoMode = true
+        demoNote = ""
+        statusText = "打谱演示：\(scene.title)　共 \(demoTotal) 手，点「播放」开始"
+        statusWarn = false
+    }
+
+    /// 演示时走下一手
+    func demoStep() {
+        guard demoMode, demoDone < demoTotal else {
+            demoPlaying = false
+            return
+        }
+        let m = demoMoves[demoDone]
+        demoDone += 1
+        demoNote = scene.demoNotes[demoDone] ?? ""
+        play(move: m, track: false)
+    }
+
+    func demoToggle() {
+        guard demoMode else { startDemo(); return }
+        if demoPlaying { demoPlaying = false; return }
+        if demoDone >= demoTotal {          // 放完了再按就从头再演一遍
+            demoDone = 0
+            let s = scene
+            load(scene: s, silent: true)
+            demoMode = true
+            demoNote = ""
+        }
+        demoPlaying = true
+        statusText = "打谱演示中…"
+        demoStep()
+    }
+
+    func exitDemo() {
+        demoTicker?.cancel()
+        demoTicker = nil
+        demoPlaying = false
+        demoMode = false
+        demoTotal = 0
+        demoDone = 0
+        demoNote = ""
+        load(scene: scene, silent: true)
+        showToast("已退出演示", kind: "")
+    }
+
+    /// 演示播放的节奏：等这一手的动画停下来，再走下一手
+    private func scheduleDemoNextIfNeeded() -> Bool {
+        guard demoMode, demoPlaying else { return false }
+        guard demoDone < demoTotal else {
+            demoPlaying = false
+            statusText = "演示结束（共 \(demoTotal) 手）"
+            statusWarn = false
+            return true
+        }
+        demoTicker = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 620_000_000)
+            guard let self, !Task.isCancelled, self.demoPlaying, self.demoMode else { return }
+            self.statusText = "打谱演示 \(self.demoDone)/\(self.demoTotal)　\(self.demoNote)"
+            self.demoStep()
+        }
+        return true
+    }
+
+    // MARK: - 棋谱导入导出
+
+    var exportFEN: String { Rules.fen(board) }
+
+    var exportMoveText: String {
+        guard !history.isEmpty else { return "" }
+        return Notation.movesToText(startFEN: scene.startFEN, moves: history.map { $0.move })
+    }
+
+    /// 一段可以直接发出去的完整文本：局面、棋谱、坐标三种形式都在里面，
+    /// 自己或别人再粘回来都能还原。
+    var exportShareText: String {
+        var out: [String] = []
+        out.append("象棋教练 · \(scene.title)")
+        if let first = scene.note.split(separator: "\n").first.map(String.init), !first.isEmpty {
+            out.append(first)
+        }
+        out.append("")
+        out.append("【初始局面】")
+        out.append(scene.startFEN)
+        if !exportMoveText.isEmpty {
+            out.append("")
+            out.append("【棋谱】")
+            out.append(exportMoveText)
+            out.append("")
+            out.append("【着法坐标】")
+            out.append(history.flatMap { [$0.move.from, $0.move.to] }
+                        .map(String.init).joined(separator: ","))
+        }
+        out.append("")
+        out.append("【当前局面】")
+        out.append(exportFEN)
+        return out.joined(separator: "\n")
+    }
+
+    /// 导入局面或棋谱。返回 nil 表示成功，否则返回给用户看的说明。
+    @discardableResult
+    func importText(_ raw: String) -> String? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return "没有内容可导入。" }
+
+        // ① 局面串
+        for token in text.split(whereSeparator: { " \n\t，,、;；".contains($0) }) {
+            let t = token.trimmingCharacters(in: CharacterSet(charactersIn: "：:。()（）"))
+            if let fen = GameState.validatedFEN(t) {
+                let s = XQScene.custom(title: "导入的局面", fen: fen,
+                                       note: "这是导入进来的局面。点「重开」可以回到这里。")
+                load(scene: s, silent: true)
+                showToast("已导入局面", kind: "")
+                return nil
+            }
+        }
+
+        // ② 中文棋谱
+        let labels = text.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
+            .map(String.init)
+            .filter { $0.range(of: "[平进退]", options: .regularExpression) != nil }
+        if !labels.isEmpty { return applyImportedMoveText(labels) }
+
+        // ③ 着法坐标串
+        let nums = text.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
+        if nums.count >= 2, nums.count % 2 == 0, nums.allSatisfy({ $0 >= 0 && $0 < 90 }) {
+            return applyImportedCoords(nums)
+        }
+
+        return "没认出可导入的内容。\n\n可以粘贴：\n· FEN 局面串\n· 中文棋谱，如「炮二平五 马8进7」\n· 着法坐标，如「67,40,19,46」"
+    }
+
+    /// 校验并规范化一个局面串。返回 nil 表示这不是一个可用的局面。
+    static func validatedFEN(_ s: String) -> String? {
+        let rows = s.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard rows.count == 10 else { return nil }
+        var b = [Int8](repeating: 0, count: 90)
+        for (r, row) in rows.enumerated() {
+            guard row.count == 9 else { return nil }
+            for (c, ch) in row.enumerated() {
+                if ch == "." { continue }
+                guard let p = Piece.fromChar[ch] else { return nil }
+                b[r * 9 + c] = p
+            }
+        }
+        // 必须恰好一个帅、一个将，且都在九宫之内 —— 否则引擎会算出离谱的结果
+        var redKings = 0, blackKings = 0
+        for i in 0..<90 {
+            if b[i] == Piece.code(Piece.typeKing, .red) { redKings += 1 }
+            if b[i] == Piece.code(Piece.typeKing, .black) { blackKings += 1 }
+        }
+        guard redKings == 1, blackKings == 1 else { return nil }
+        let kr = Rules.kingIndex(b, .red), kb = Rules.kingIndex(b, .black)
+        guard kr >= 0, kb >= 0 else { return nil }
+        guard (7...9).contains(Rules.row(kr)), (3...5).contains(Rules.col(kr)) else { return nil }
+        guard (0...2).contains(Rules.row(kb)), (3...5).contains(Rules.col(kb)) else { return nil }
+        guard !Rules.kingsFacing(b) else { return nil }
+        return Rules.fen(b)
+    }
+
+    private func applyImportedMoveText(_ labels: [String]) -> String? {
+        var b = Rules.parse(Rules.startFEN)
+        var side: Side = .red
+        var applied: [Move] = []
+        var rejected: String?
+        for token in labels {
+            guard let m = Notation.findMove(board: b, side: side, text: token) else {
+                rejected = token
+                break
+            }
+            applied.append(m)
+            _ = Rules.makeMove(&b, m)
+            side = side.other
+        }
+        guard !applied.isEmpty else {
+            return "第一手「\(rejected ?? labels[0])」从标准开局走不通。"
+        }
+        let note = rejected == nil
+            ? "从标准开局起，已按棋谱走完 \(applied.count) 手。"
+            : "已走 \(applied.count) 手；「\(rejected ?? "")」之后的着法没认出来，停在合法处。"
+        installImported(title: "导入的棋谱", moves: applied, note: note)
+        showToast("已导入棋谱（\(applied.count) 手）", kind: "")
+        return nil
+    }
+
+    private func applyImportedCoords(_ nums: [Int]) -> String? {
+        var b = Rules.parse(Rules.startFEN)
+        var side: Side = .red
+        var applied: [Move] = []
+        var i = 0
+        while i + 1 < nums.count {
+            let m = Move(from: nums[i], to: nums[i + 1])
+            guard Rules.legalMoves(b, side).contains(m) else {
+                if applied.isEmpty {
+                    return "第一手「\(nums[i])→\(nums[i + 1])」在当前局面不合法。"
+                }
+                break
+            }
+            applied.append(m)
+            _ = Rules.makeMove(&b, m)
+            side = side.other
+            i += 2
+        }
+        guard !applied.isEmpty else { return "没能识别出任何合法着法。" }
+        installImported(title: "导入的棋谱",
+                        moves: applied,
+                        note: "按坐标导入，共 \(applied.count) 手。")
+        showToast("已导入棋谱（\(applied.count) 手）", kind: "")
+        return nil
+    }
+
+    private func installImported(title: String, moves: [Move], note: String) {
+        scene = XQScene.custom(title: title, fen: Rules.startFEN, note: note)
+        board = Rules.parse(Rules.startFEN)
+        history = []
+        moveMarks = [:]
+        collectedEvals = []
+        collectedFlags = GameFlags()
+        turn = .red
+        selected = -1
+        targets = []
+        hintMove = nil
+        lastMove = nil
+        gameOver = false
+        thinking = false
+        animating = false
+        pendingAnalysis = nil
+        demoMode = false
+
+        for m in moves {
+            let label = Notation.label(board: board, move: m)
+            let cap = Rules.makeMove(&board, m)
+            history.append(HistoryItem(move: m, captured: cap, label: label, side: turn))
+            lastMove = m
+            turn = turn.other
+        }
+        record = GameRecord(id: UUID().uuidString, savedAt: Date(),
+                            sceneId: scene.id, sceneName: scene.title,
+                            level: levelKey, mode: modeKey, startFEN: scene.startFEN,
+                            moves: history.flatMap { [$0.move.from, $0.move.to] },
+                            evals: [], flags: GameFlags(), result: "unfinished",
+                            finished: false, ply: history.count)
+        refreshLegal()
+        updateCheckState()
+        updateEval()
+        statusText = note
+        statusWarn = false
     }
 
     // MARK: - 悔棋
