@@ -1,0 +1,49 @@
+# XcodeGen 工程定义 —— 执行 `xcodegen generate` 会在本目录生成 XiangqiCoach.xcodeproj
+#
+# 工程文件本身不纳入版本管理（见 .gitignore），这样多人协作不会因为 pbxproj 冲突。
+name: XiangqiCoach
+
+options:
+  bundleIdPrefix: com.peter260807
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    GENERATE_INFOPLIST_FILE: YES
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: "1.0.0"
+    DEVELOPMENT_LANGUAGE: zh-Hans
+
+targets:
+  XiangqiCoach:
+    type: application
+    platform: iOS
+    sources:
+      - path: XiangqiCoach
+    settings:
+      base:
+        PRODUCT_NAME: 象棋教练
+        PRODUCT_BUNDLE_IDENTIFIER: com.peter260807.xiangqicoach
+        # 1 = iPhone, 2 = iPad
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_KEY_CFBundleDisplayName: 象棋教练
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+
+schemes:
+  XiangqiCoach:
+    build:
+      targets:
+        XiangqiCoach: all
+    run:
+      config: Debug

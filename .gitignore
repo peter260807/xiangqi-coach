@@ -1,0 +1,36 @@
+# ---------- 密钥与本地配置（切勿提交） ----------
+web/js/config.js
+ios/XiangqiCoach/Resources/AppConfig.local.plist
+*.local.plist
+secrets.json
+
+# ---------- 系统 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- Node ----------
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# ---------- Xcode ----------
+# 工程文件由 XcodeGen 从 ios/project.yml 生成，不纳入版本管理
+ios/*.xcodeproj/
+ios/*.xcworkspace/
+ios/build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# ---------- 测试临时产物 ----------
+_probe.html
+_cors.html
+_s_*.html
+/*.png
+!/docs/screenshots/*.png

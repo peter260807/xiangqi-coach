@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="象棋教练">
+<meta name="theme-color" content="#f4f1ea">
+<title>象棋教练 · 人机对弈 · 杀法残局 · AI 指导</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<div class="wrap">
+
+  <div class="topbar">
+    <div class="brand">
+      <div class="seal">象</div>
+      <div>
+        <h1>象棋教练</h1>
+        <div class="sub" id="engineInfo">本地引擎就绪</div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <button class="iconbtn" id="btnSettings" title="模型设置" aria-label="模型设置">⚙</button>
+  </div>
+
+  <!-- ============ 对弈 ============ -->
+  <section class="page on" id="page-play">
+
+    <div class="card eval">
+      <div class="eval-head">
+        <span class="eval-side red">红方 <b id="redPct">50%</b></span>
+        <span class="eval-mid" id="evalText">均势</span>
+        <span class="eval-side black"><b id="blackPct">50%</b> 黑方</span>
+      </div>
+      <div class="eval-track">
+        <i class="eval-fill" id="evalFill"></i>
+        <span class="eval-ticks"></span>
+      </div>
+    </div>
+
+    <div class="boardwrap">
+      <canvas id="board"></canvas>
+      <div class="toast" id="toast"></div>
+    </div>
+
+    <div class="card status" id="status"><span class="dot red"></span><span>轮到你走（红方）</span></div>
+
+    <div class="controls">
+      <button id="btnHint">提示</button>
+      <button id="btnUndo">悔棋</button>
+      <button id="btnRestart">重开</button>
+      <select class="span3" id="selScene"></select>
+      <select class="span2" id="selLevel">
+        <option value="easy">难度：入门</option>
+        <option value="normal">难度：初级</option>
+        <option value="hard" selected>难度：中级</option>
+        <option value="expert">难度：高级</option>
+        <option value="master">难度：大师</option>
+      </select>
+      <button id="btnSave">存档</button>
+      <select class="span3" id="selMode">
+        <option value="engine">对手：本地引擎</option>
+        <option value="hybrid">对手：引擎 + 大模型协作</option>
+      </select>
+      <button class="jade span2" id="btnCoach">AI 点评局面</button>
+      <button id="btnReview">AI 复盘</button>
+    </div>
+
+    <div class="card panel" id="panel">
+      <div class="panel-head">
+        <span class="title" id="panelTitle">教练</span>
+        <button class="tiny ghost" id="panelClose" style="width:auto">关闭</button>
+      </div>
+      <div class="panel-body" id="panelBody"></div>
+      <div class="panel-foot" id="panelFoot"></div>
+    </div>
+
+    <div class="card moves" id="moves"></div>
+  </section>
+
+  <!-- ============ 训练 ============ -->
+  <section class="page" id="page-train">
+    <div class="section-title">
+      <span>为你推荐</span>
+      <span id="drillHint"></span>
+    </div>
+    <div id="drillList"></div>
+
+    <div class="section-title">
+      <span>杀法练习</span>
+      <span id="mateProgress"></span>
+    </div>
+    <div id="mateList"></div>
+
+    <div class="section-title"><span>开局库</span></div>
+    <div id="openingList"></div>
+
+    <div class="section-title"><span>实用残局</span></div>
+    <div id="studyList"></div>
+  </section>
+
+  <!-- ============ 战绩 ============ -->
+  <section class="page" id="page-stats">
+    <div class="stats-grid" id="statGrid"></div>
+
+    <div class="section-title"><span>能力画像</span><span id="overallScore"></span></div>
+    <div class="card ability" id="abilityBox"></div>
+
+    <div class="section-title">
+      <span>对局存档</span>
+      <button class="tiny ghost" id="btnClearGames" style="width:auto">清空</button>
+    </div>
+    <div id="gameList"></div>
+  </section>
+
+  <nav class="tabs" id="tabs">
+    <button data-page="play" class="on"><span class="g">♟</span>对弈</button>
+    <button data-page="train"><span class="g">◎</span>训练</button>
+    <button data-page="stats"><span class="g">◔</span>战绩</button>
+  </nav>
+
+  <footer class="foot">
+    提示与胜率来自本地 Alpha-Beta 引擎，纯离线可用；AI 点评由大模型生成，仅供参考。
+  </footer>
+</div>
+
+<!-- ============ 设置 ============ -->
+<div class="overlay" id="overlay">
+  <div class="sheet">
+    <h2>
+      <span>模型设置</span>
+      <button class="tiny ghost" id="cfgCancel" style="width:auto">关闭</button>
+    </h2>
+
+    <div class="field">
+      <label>接口地址</label>
+      <input id="cfgBase" type="text" placeholder="https://api.deepseek.com" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <span class="hint">填根域名或完整地址都行，程序会自动补 /chat/completions。任何兼容 OpenAI 格式的接口都可以。</span>
+    </div>
+
+    <div class="field">
+      <label>API Key</label>
+      <input id="cfgKey" type="password" placeholder="sk-..." autocapitalize="off" autocorrect="off" spellcheck="false">
+      <span class="hint">只保存在本机浏览器，不会上传。代码仓库里也没有它。</span>
+    </div>
+
+    <div class="field">
+      <label>模型</label>
+      <input id="cfgModel" type="text" list="modelList" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <datalist id="modelList"></datalist>
+    </div>
+
+    <div class="grid3">
+      <div class="field">
+        <label>温度</label>
+        <input id="cfgTemp" type="text" inputmode="decimal">
+      </div>
+      <div class="field">
+        <label>max_tokens</label>
+        <input id="cfgMax" type="text" inputmode="numeric">
+      </div>
+      <div class="field">
+        <label>超时(秒)</label>
+        <input id="cfgTimeout" type="text" inputmode="numeric">
+      </div>
+    </div>
+    <span class="hint">推理模型会先输出一长段思维链且计入 max_tokens，低于 2500 正文可能为空；整局复盘建议 6000 以上。</span>
+
+    <div class="msg" id="cfgMsg" style="display:none"></div>
+
+    <div class="grid2">
+      <button id="cfgFetch">拉取模型列表</button>
+      <button id="cfgTest">测试连接</button>
+    </div>
+    <div class="grid3">
+      <button class="ghost" id="cfgResetData">清空存档</button>
+      <button class="ghost" id="cfgRestore">恢复默认</button>
+      <button class="primary" id="cfgSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/config.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/library-data.js"></script>
+<script src="js/library.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/board.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
