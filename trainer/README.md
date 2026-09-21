@@ -547,10 +547,33 @@ CUDA 版本与驱动的最低要求：`cu126` 要 527+，`cu128` 要 570+，`cu1
 1 亿个局面约占 9.3 GB。跑之前留 30 GB 比较稳妥。
 数据用完（训练结束后）可以删掉 `data\` 腾空间。
 
+**Q：跑到一半断电 / 机器自动更新重启了**
+直接重新跑同一个脚本就行，**已完成的步骤会自动跳过**。三件事是这么保证的：
+
+| 阶段 | 怎么续 |
+|---|---|
+| 数据生成 | 累计时长记在 `data\v2\_progress.json`，重启后**只补差额**；分片是追加写，已有数据一条不动。崩在半路留下的半条记录会在启动时被截掉（不截的话后续 append 会让**整个文件错位**，而训练时不会报错） |
+| 训练 | 每个 epoch 结束**原子写** `ckpt.pt`（模型 + 优化器 + 学习率调度 + 随机数状态），重启后从下一个 epoch 继续 |
+| 导出 / 报告 / 评估 | 产物文件在就跳过 |
+
+```bat
+run-full.bat --status     只看每一步做完没有，不跑东西
+run-full.bat              续跑（默认）
+run-full.bat --fresh      忽略断点，全部重跑
+```
+
+两个刻意的保护，都是为了不让「续跑」变成静默出错：
+
+- **训练参数与 checkpoint 不一致会明确拒绝**（退出码 2），而不是接着训出一个四不像
+- **数据变了会警告**「验证集指标与之前几轮不可比」，然后继续
+
+> 之前不是这样的：老版本只要发现 `data\` 目录存在就 `rd /s /q` 删掉重来 ——
+> 半夜自动更新重启一次，9 小时的数据就白跑了（实测发生过）。
+
 **Q：训练到一半想停**
-按 Ctrl+C 就行，每轮结束都会存 checkpoint，已训练的进度不会丢。
-想接着训就把 `EPOCHS` 调大重跑，它会从头开始 —— 如果要严格续训，
-需要改 `train.py` 加加载 checkpoint 的逻辑。
+按 Ctrl+C 就行，每轮结束都会存 checkpoint。想接着训就直接重新跑 `run-full.bat`
+（会从下一个 epoch 继续）；要加轮数就改 `src\pipeline.py` 里 `CONFIG['epochs']`。
+唯一不能改的是 `l1/l2/target-mode` —— 形状变了权重接不上，脚本会拒绝并提示。
 
 **Q：数据生成阶段某个 worker 报"引擎异常，重启"**
 不影响，脚本会自动重启那个 worker 继续跑，最后会统计异常次数。
@@ -564,6 +587,7 @@ CUDA 版本与驱动的最低要求：`cu126` 要 527+，`cu128` 要 570+，`cu1
 trainer\
 ├── README.md              本文件
 ├── engine\                放 Pikafish 的 exe 和 nnue（需要你手动放）
+├── WINDOWS-RUN.md        给 Windows 长跑用的操作说明（含断点恢复）
 ├── win\                   Windows 一键脚本
 │   ├── 0-fix-torch.bat
 │   ├── 1-install.bat
@@ -571,13 +595,17 @@ trainer\
 │   ├── 3-gen-data.bat
 │   ├── 4-train.bat
 │   ├── 5-export-verify.bat
-│   └── run-all.bat
+│   ├── run-all.bat        顺序跑一遍（不支持断点）
+│   └── run-full.bat       全流程 + 断点恢复（推荐）
 ├── src\                   实际干活的 Python
 │   ├── xq.py              棋盘表示与特征编码
 │   ├── uci.py             UCI 引擎通信
-│   ├── gen_data.py        自对弈数据生成
+│   ├── gen_data.py        自对弈数据生成（支持断点续跑）
+│   ├── resume.py          断点续跑用的小工具：原子写、分片扫描/修补、数据指纹
+│   ├── pipeline.py        全流程编排（「哪一步做完了」的判断都在这里，可测）
+│   ├── dataset_info.py    数据规模统计：记录数 / 唯一局面 / 重复率
 │   ├── model.py           网络定义
-│   ├── train.py           训练
+│   ├── train.py           训练（支持从 checkpoint 续训）
 │   ├── export.py          导出（含独立复现校验）
 │   ├── verify.py          效果验证
 │   └── selfcheck.py       环境自检（含显卡诊断）
