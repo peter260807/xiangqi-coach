@@ -46,6 +46,43 @@ def board_to_fen(board):
     return '/'.join(''.join(board[i * 9:(i + 1) * 9]) for i in range(10))
 
 
+def board_to_std_fen(board):
+    """转成标准 FEN 的棋盘部分：连续空格写成数字。
+
+    我们内部用 '.' 表示空格，但引擎只认标准 FEN ——
+    直接传 '.' 记法会被 Pikafish 判成
+        Invalid FEN. Invalid piece: .
+    所以给引擎的局面必须先过这一道转换。
+    """
+    rows = []
+    for row in board_to_fen(board).split('/'):
+        buf = []
+        empty = 0
+        for ch in row:
+            if ch == EMPTY:
+                empty += 1
+                continue
+            if empty:
+                buf.append(str(empty))
+                empty = 0
+            buf.append(ch)
+        if empty:
+            buf.append(str(empty))
+        rows.append(''.join(buf))
+    return '/'.join(rows)
+
+
+def to_engine_fen(board, side):
+    """拼出引擎可直接使用的完整 FEN。
+
+    两个容易踩的点：
+      1. 空格用数字表示（见 board_to_std_fen）
+      2. 走子方是 w / b，不是 r / b
+    """
+    return '%s %s - - 0 1' % (board_to_std_fen(board),
+                              'w' if side == 'r' else 'b')
+
+
 def uci_to_idx(sq):
     """'e0' -> 85（红方底线中路）"""
     c = ord(sq[0]) - 97

@@ -124,13 +124,19 @@ class UciEngine:
 
     # ---------- 搜索 ----------
 
-    def go(self, moves, depth=None, movetime=None, timeout_pad=180):
+    def go(self, moves=None, depth=None, movetime=None, timeout_pad=180,
+           fen=None):
         """
-        从开局走起，搜索一步。
+        搜索一步。
 
         返回 (bestmove, candidates)
         candidates 是按 multipv 序号排列的候选列表，每项形如
             {'pv': 'h2e2', 'cp': 25, 'mate': None, 'wdl': (200, 700, 100), 'depth': 8}
+
+        三种起手方式：
+            go([...])       从开局走给定的着法序列
+            go(fen='...')   直接分析指定局面（用于评估任意局面）
+            go()            从开局
 
         注意 UCI 的 `position` 命令必须带 `moves` 关键字 ——
         漏掉的话引擎会把着法串当 FEN 解析，然后报 "Illegal move"，
@@ -138,8 +144,11 @@ class UciEngine:
         """
         if depth is None and movetime is None:
             raise ValueError('depth 和 movetime 必须给一个')
-        seq = (' moves ' + ' '.join(moves)) if moves else ''
-        self.send('position startpos' + seq)
+        if fen:
+            self.send('position fen %s' % fen)
+        else:
+            seq = (' moves ' + ' '.join(moves)) if moves else ''
+            self.send('position startpos' + seq)
         if depth is not None:
             self.send('go depth %d' % depth)
         else:
