@@ -256,9 +256,49 @@ xcodebuild test -project XiangqiCoach.xcodeproj -scheme XiangqiCoach \
 
 ---
 
+## 与 Pikafish 的实测差距
+
+"差距有多大"这种事靠嘴说没用，所以写了个裁判让它们真下：
+`tools/pk-match.js` 以子进程方式拉起 Pikafish（走 UCI 协议），红方交给它、黑方交给本项目引擎，
+每一手都用本项目自己的规则引擎复验合法性。
+
+```bash
+# 1. 编译 Pikafish（本机 Apple Silicon 约 20 秒）
+git clone --depth 1 https://github.com/official-pikafish/Pikafish.git
+cd Pikafish/src && make -j build ARCH=apple-silicon
+
+# 2. 取 NNUE 权重 —— 它在 .gitignore 里，要从 GitHub Release 的 7z 包里拿
+gh release download --repo official-pikafish/Pikafish --pattern "*.7z"
+
+# 3. 开打
+node tools/pk-match.js --pika /path/to/pikafish --nnue /path/to/pikafish.nnue \
+                       --games 6 --pika-ms 100 --my-ms 1000
+```
+
+实测结果（Mac / Apple Silicon / 双方单线程）：
+
+| 组 | Pikafish 拿到的资源 | 本项目引擎 | 结果 |
+|---|---|---|---|
+| A | 每步 100ms | 每步 1000ms（给足 10 倍时间） | **0 胜 6 负**，全部被将死，平均 35 手 |
+| B | 每步 **10ms** | 每步 1000ms | **0 胜 4 负**，29~41 手 |
+| C | **固定 2 层** | 每步 1000ms（实际搜到 5.5~6 层） | **0 胜 3 负 1 和**，105 手 |
+
+**C 组最说明问题。** 把 Pikafish 压到只搜 2 层，让它比本项目引擎少搜近 3 倍深度，
+它仍然一局没输。也就是说差距**不在搜索深度，而在评估函数** ——
+本项目用的是手写的子力价值 + 位置价值表，Pikafish 用的是 NNUE 神经网络。
+
+手数的变化也印证了这一点：100ms 时 35 手解决，压到 2 层后要 105 手。
+限制确实削弱了它，但削弱的只是"赢得快不快"，不是"赢不赢"。
+
+顺带一提，这个裁判本身也是给规则层做的一次实弹检验：
+6 局共 200 多手，本项目引擎没有走出过一手非法着法。
+
+---
+
 ## 已知限制
 
-- 引擎是手写的 Alpha-Beta 搜索，约业余 5~8 级水平；**远不及皮卡鱼（Pikafish）这类职业级引擎**
+- 引擎是手写的 Alpha-Beta 搜索，约业余 5~8 级水平。差距的量级可以看上面那组实测：
+  **Pikafish 只搜 2 层也不输给搜到 5.5 层的本引擎** —— 瓶颈在评估函数，不在搜索深度
 - 棋谱库是**精选小库**：1 局古谱名局 + 11 个杀法 + 8 条开局 + 3 个实用残局。
   没有几十万局那种在线棋谱库，也没有云库开局
 - **没有拍照识局**。视觉模型实测可用（能读出棋子与坐标，名局的棋盘图也认得下来），
