@@ -1,0 +1,24 @@
+把 Pikafish 引擎放到这个文件夹里
+================================
+
+需要两个文件，都来自同一个发布包：
+
+  1. Pikafish-Windows-x86-64-universal.exe
+     → 复制过来后建议改名为 pikafish.exe
+
+  2. pikafish.nnue
+     → 神经网络权重，约 50 MB，必须和 exe 放在同一层
+
+下载地址
+--------
+https://github.com/official-pikafish/Pikafish/releases
+
+下载最新那个 Pikafish.YYYY-MM-DD.7z（约 51 MB），解压后就能找到上面两个文件。
+如果系统没有 7z 解压工具，可以装一个 7-Zip：https://www.7-zip.org/
+
+注意
+----
+- 请从官方仓库 official-pikafish/Pikafish 下载。网上有不少仿冒站，
+  同一件事一会儿说基于 NNUE 一会儿说基于 MCTS，协议和版本号还互相矛盾。
+- exe 和 nnue 必须来自同一个发布包，别把不同版本混着用。
+- 放好之后双击 win\2-selfcheck.bat 验证一下，它会实际启动一次引擎确认能用。

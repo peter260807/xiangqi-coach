@@ -34,3 +34,23 @@ _cors.html
 _s_*.html
 /*.png
 !/docs/screenshots/*.png
+
+# ---------- Python ----------
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ---------- 训练包 ----------
+# 引擎与自己下的权重不进仓库：体积大（exe 7MB + nnue 50MB），
+# 而且权重有独立许可，不适合随本仓库分发
+trainer/engine/*.exe
+trainer/engine/pikafish*
+trainer/engine/*.nnue
+
+# 训练产物（数据动辄几个 GB，checkpoint 每次重跑都会覆盖）
+trainer/data/
+trainer/logs/
+_train*/
+
