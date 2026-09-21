@@ -293,6 +293,25 @@ node tools/pk-match.js --pika /path/to/pikafish --nnue /path/to/pikafish.nnue \
 顺带一提，这个裁判本身也是给规则层做的一次实弹检验：
 6 局共 200 多手，本项目引擎没有走出过一手非法着法。
 
+### 下一步怎么走：完整评估在 `docs/engine-strategy.md`
+
+既然差距在评估函数，自然的想法就是"训一个自己的神经网络"。但这条路和
+"直接把 Pikafish 接进来"各有各的坎，我把两个方案都实测评估了一遍，结论写在
+**[`docs/engine-strategy.md`](docs/engine-strategy.md)**，关键数据：
+
+- **数据生成不是瓶颈**（但要用对限流方式）：`go depth 8` 单进程 468 局面/秒，
+  8 核一周约 **22 亿局面**。用 `go movetime` 测会低估 20 倍以上 —— 它会让引擎把时间用满
+- **2080Ti 对生成数据没有帮助**：Pikafish 是纯 CPU 引擎，GPU 只在训练网络时有
+- **官方训练工具链没有公开可用版本**：`pikafish-nnue-pytorch` 与 `tools` 分支均不存在，
+  只剩国际象棋版可改造 —— 这是最大的卡点，不是算力
+- **许可有两道门**：GPL-3.0 的义务只在分发时触发（服务器方案成立，因为 Pikafish
+  **不是** AGPL）；但 `pikafish.nnue` 权重另有独立许可，蒸馏产物可能受其约束
+- **引擎服务化已实测**：协议开销仅 0.4%，同区域服务器 30ms RTT 下单步体感
+  230ms（用户无感），边际成本可用自有机器压到零
+
+复现脚本：`tools/data-quality-probe.js`（数据产出速率）、
+`tools/engine-latency-probe.js`（网络延迟影响）、`tools/engine-server-probe.js`（协议开销）。
+
 ---
 
 ## 已知限制
