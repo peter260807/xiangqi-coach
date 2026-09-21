@@ -46,6 +46,7 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import resume                                               # noqa: E402
 from gen_data import REC_DTYPE, REC_SIZE, position_hashes   # noqa: E402
 from model import (CP_SCALE, FEATURE_DIM, MAX_FEATURES, OUTPUT_SCALE,  # noqa: E402
                    PAD_INDEX, VALUE_CLIP, XQNet, huber_loss)
@@ -307,6 +308,8 @@ def parse_args(argv=None):
     ap.add_argument('--device', default=None, help='cpu / cuda / mps，默认自动')
     ap.add_argument('--seed', type=int, default=20260921)
     ap.add_argument('--log-every', type=int, default=200, help='每多少步打印一次')
+    ap.add_argument('--fresh', action='store_true',
+                    help='忽略已有 checkpoint 从头训练（默认是：发现 ckpt 就接着上次的轮次继续）')
     return ap.parse_args(argv)
 
 
@@ -366,7 +369,68 @@ def main():
     step = 0
     stopped = False
 
-    for epoch in range(1, args.epochs + 1):
+    # ---- 断点恢复 ----
+    # 默认行为：发现 ckpt.pt 就接着上次的轮次继续（默认才叫"断点恢复"，
+    # 否则用户还得记得加参数）。想从头训加 --fresh。
+    ckpt_path = os.path.join(args.out, 'ckpt.pt')
+    start_epoch = 1
+    fp = resume.data_fingerprint(args.data, REC_SIZE)
+    if args.fresh and os.path.isfile(ckpt_path):
+        os.remove(ckpt_path)
+        log('--fresh：已丢弃旧 checkpoint，从头训练')
+    if (not args.fresh) and os.path.isfile(ckpt_path):
+        ck = None
+        try:
+            # weights_only=False 是必需的：checkpoint 里存了优化器状态、
+            # numpy 的随机数状态这些非张量对象（文件是本机自己写的）
+            ck = torch.load(ckpt_path, map_location=device, weights_only=False)
+        except Exception as e:
+            log('[警告] checkpoint 读不出来（%s），改为从头训练' % e)
+        if ck is not None:
+            # 形状相关的参数必须一致，否则权重根本接不上
+            shape_keys = ('l1', 'l2', 'target_mode')
+            bad = [k for k in shape_keys if ck.get(k) != getattr(args, k)]
+            if bad:
+                log('[拒绝续训] checkpoint 的 %s 与当前参数不一致：'
+                    % '、'.join(bad))
+                for k in bad:
+                    log('           %-12s checkpoint=%s  当前=%s'
+                        % (k, ck.get(k), getattr(args, k)))
+                log('           要么用原参数重跑，要么加 --fresh 从头训。')
+                log_f.close()
+                return 2
+            old_fp = ck.get('data_fingerprint') or {}
+            if old_fp and old_fp.get('digest') != fp.get('digest'):
+                log('[注意] 数据变了，仍按断点继续，但验证集指标与之前几轮不可比：')
+                log('       之前 %s 个分片 / %s 条，现在 %s 个分片 / %s 条'
+                    % (old_fp.get('files'), old_fp.get('records'),
+                       fp.get('files'), fp.get('records')))
+            net.load_state_dict(ck['model'])
+            if ck.get('optimizer'):
+                opt.load_state_dict(ck['optimizer'])
+            if ck.get('scheduler'):
+                sched.load_state_dict(ck['scheduler'])
+            if ck.get('rng'):
+                # 恢复随机数状态，让每个 epoch 的取样顺序可复现
+                try:
+                    rng.bit_generator.state = ck['rng']
+                except Exception:
+                    pass
+            step = int(ck.get('step', 0))
+            start_epoch = int(ck.get('epoch', 0)) + 1
+            log('')
+            log('=== 从断点继续：已完成 %d 轮，从第 %d 轮开始（累计 %d 步）==='
+                % (start_epoch - 1, start_epoch, step))
+            log('    上次验证 loss=%.5f（均势档相关系数 %.4f）'
+                % (ck.get('val_loss', 0.0), ck.get('val_corr_balanced', 0.0)))
+    if start_epoch > args.epochs:
+        log('已训到第 %d 轮，达到 --epochs=%d，无需继续，直接导出权重。'
+            % (start_epoch - 1, args.epochs))
+        torch.save(net.state_dict(), os.path.join(args.out, 'weights.pt'))
+        log_f.close()
+        return 0
+
+    for epoch in range(start_epoch, args.epochs + 1):
         if stopped:
             break
         order = rng.permutation(len(tr_idx))
@@ -411,17 +475,31 @@ def main():
         log('        换算成引擎分值：平均偏差 %.1f 分（均势档 %.1f 分）'
             % (st['mae_cp'], st['mae_cp_bal']))
 
+        # checkpoint 原子写：先写 .tmp 再 replace。
+        # 直接覆写的话，正卡在写盘时断电（Windows 自动更新重启就属于这种）
+        # 会留下一个半损坏的 ckpt —— torch.load 对截断文件未必报错，
+        # 可能安静地读进一堆坏权重。
         ckpt = os.path.join(args.out, 'ckpt.pt')
+        tmp = ckpt + '.tmp'
         torch.save({
             'model': net.state_dict(),
+            'optimizer': opt.state_dict(),
+            'scheduler': sched.state_dict(),
+            'rng': rng.bit_generator.state,
             'l1': args.l1, 'l2': args.l2,
             'target_mode': args.target_mode,
+            'epochs': args.epochs, 'batch': args.batch, 'lr': args.lr,
             'epoch': epoch, 'step': step,
+            'data_fingerprint': fp,
             'val_loss': st['loss'], 'val_corr': st['corr'],
             'val_corr_balanced': st['corr_bal'],
             'val_mae_cp': st['mae_cp'],
-        }, ckpt)
-        log('  已保存 checkpoint: %s' % ckpt)
+        }, tmp)
+        with open(tmp, 'rb+') as f:
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, ckpt)
+        log('  已保存 checkpoint: %s（第 %d 轮完成，随时中断都能续训）' % (ckpt, epoch))
 
     # 另外导出一份纯权重，便于 export.py 直接使用
     torch.save(net.state_dict(), os.path.join(args.out, 'weights.pt'))
@@ -432,4 +510,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # 让 exit code 反映成功与否：拒绝续训会返回 2，上层（pipeline / bat）
+    # 靠它决定是停下来还是继续往后走。之前这里只是 main()，
+    # 返回值被丢掉，拒绝续训也报成功。
+    sys.exit(main() or 0)

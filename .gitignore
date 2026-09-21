@@ -52,6 +52,8 @@ trainer/engine/*.nnue
 # 训练产物（数据动辄几个 GB，checkpoint 每次重跑都会覆盖）
 trainer/data/
 trainer/logs/
+# 一键流程的产出目录（报告、positions.json、网络副本）
+trainer/results/
 _train*/
 
 # 拷去 Windows 跑整条流水线的压缩包（临时产物，随时可重新生成）

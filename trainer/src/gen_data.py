@@ -28,6 +28,7 @@ for _s in (_sys.stdout, _sys.stderr):
 del _sys, _s
 import argparse
 import glob
+import json
 import math
 import os
 import random
@@ -38,6 +39,7 @@ import numpy as np
 from multiprocessing import Event, Process, Value
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import resume                                # noqa: E402
 import xq                                    # noqa: E402
 from uci import EngineError, UciEngine       # noqa: E402
 
@@ -260,7 +262,10 @@ def worker(wid, args, counter, stop_event):
     games = 0
     written = 0
     t0 = time.time()
-    deadline = t0 + args.minutes * 60
+    # 剩余时长由主进程按「累计已经跑过多久」算好后传进来（见 main()）。
+    # 不能直接用 args.minutes 乘：那样每次重启都从零开始计时，
+    # 一个 12 小时的窗口会被跑成二十多个小时。
+    deadline = t0 + args.remaining_sec
     errors = 0
 
     def flush():
@@ -274,6 +279,13 @@ def worker(wid, args, counter, stop_event):
     try:
         eng = UciEngine(args.engine, args.nnue, threads=1,
                         hash_mb=args.hash, show_wdl=False)
+        # 崩在半路时，分片尾部可能残留半条记录。append 之前先截掉 ——
+        # 否则会从半条记录之后接着写，**整个文件从此错位**，
+        # 而且训练时读到的是错位的棋盘与分值，不会报任何错。
+        fixed = resume.trim_partial_tail(out_path, REC_SIZE)
+        if fixed:
+            print('[worker %02d] 截掉上次中断残留的半条记录 %d 字节' % (wid, fixed),
+                  flush=True)
         f = open(out_path, 'ab')
 
         while not stop_event.is_set() and time.time() < deadline:
@@ -332,6 +344,24 @@ def written_count(written, n):
     return written + n
 
 
+def elapsed_seconds(out_dir, rate_hint):
+    """返回 (累计已跑秒数, 是否为估算值)。
+
+    正常情况下直接读 _progress.json。但**旧版本生成的数据没有这个文件** ——
+    那次如果已经跑了好几个小时，按「0 分钟进度」处理就会把整个目标时长再跑一遍。
+    所以这里退回按记录数估算：records / rate_hint。估算值会明确标出来，
+    因为它只是数量级上对（本机实测 14 worker / depth 8 大约 1500~2000 条每秒）。
+    """
+    prog = resume.read_progress(out_dir)
+    if prog.get('elapsed_sec') is not None:
+        return float(prog['elapsed_sec']), False
+    shards = resume.scan_shards(out_dir, REC_SIZE)
+    records = sum(n for _, n in shards)
+    if not records or rate_hint <= 0:
+        return 0.0, False
+    return records / float(rate_hint), True
+
+
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         description='Pikafish 自对弈生成 NNUE 训练数据')
@@ -353,7 +383,14 @@ def parse_args(argv=None):
                          '默认 12 是实测调上去的：原来只给 6，平均才 3 手随机，'
                          '后续着法完全由引擎决定，生成的两千万条里重复率高达 63%%')
     ap.add_argument('--minutes', type=float, default=180,
-                    help='每个 worker 运行多少分钟')
+                    help='累计运行多少分钟。**跨重启累计**：已跑过的时长记在输出目录的 '
+                         '_progress.json 里，重启后只补差额，不会每次从零重新计时')
+    ap.add_argument('--fresh', action='store_true',
+                    help='忽略断点，清掉已有分片与进度记录重新生成（默认是接着上次跑）')
+    ap.add_argument('--rate-hint', type=float, default=1500,
+                    help='估算用速率（条/秒）。只在一批数据**没有时长记录**时用来反推'
+                         '「已经跑了多久」，避免把目标时长整份重跑一遍。'
+                         '本机实测 14 worker / depth 8 大约 1500~2000')
     ap.add_argument('--records', type=int, default=0,
                     help='总局面数上限（0 表示不限，按时间跑）')
     ap.add_argument('--seed', type=int, default=20260921)
@@ -394,6 +431,21 @@ def main():
     args.out = os.path.abspath(args.out)
     os.makedirs(args.out, exist_ok=True)
 
+    # ---- 断点续跑：先看清这个目录里已经有什么 ----
+    if args.fresh:
+        olds = resume.scan_shards(args.out, REC_SIZE)
+        for p, _ in olds:
+            os.remove(p)
+        prog_path = os.path.join(args.out, resume.PROGRESS_NAME)
+        if os.path.isfile(prog_path):
+            os.remove(prog_path)
+        print('[--fresh] 已清掉 %d 个旧分片与进度记录，从头生成' % len(olds))
+
+    shards = resume.scan_shards(args.out, REC_SIZE)
+    have_records = sum(n for _, n in shards)
+    done_sec, estimated = elapsed_seconds(args.out, args.rate_hint)
+    remain_sec = args.minutes * 60 - done_sec
+
     print('=' * 64)
     print('自对弈数据生成')
     print('  引擎      : %s' % args.engine)
@@ -401,12 +453,36 @@ def main():
     print('  输出目录  : %s' % args.out)
     print('  并行进程  : %d' % args.workers)
     print('  搜索深度  : %d' % args.depth)
-    print('  运行时长  : %.0f 分钟' % args.minutes)
     print('  开局随机  : %d 手' % args.opening_plies)
+    if shards:
+        print('  续跑      : 已有 %d 个分片 / %d 条记录（%.2f GB），累计已跑 %.0f 分钟%s'
+              % (len(shards), have_records, have_records * REC_SIZE / 1024 ** 3,
+                 done_sec / 60, '（估算）' if estimated else ''))
+        if estimated:
+            print('              这批数据没有时长记录（旧版本生成的），'
+                  '上面是按 %.0f 条/秒估算的' % args.rate_hint)
+            print('              估算会有偏差；若不符预期，请调整 --minutes，'
+                  '或直接删掉本目录重来')
+        fixed = sum(resume.trim_partial_tail(p, REC_SIZE) for p, _ in shards)
+        if fixed:
+            print('              修补掉上次中断残留的 %d 字节半条记录' % fixed)
+            have_records = sum(n for _, n in resume.scan_shards(args.out, REC_SIZE))
+    else:
+        print('  续跑      : 目录是空的，从头开始')
+    print('  目标时长  : 累计 %.0f 分钟（本次还需 %.0f 分钟）'
+          % (args.minutes, max(remain_sec, 0) / 60))
     print('=' * 64)
 
+    if remain_sec <= 0:
+        print('累计时长已经达标，不需要再生成。若要重新生成请加 --fresh。')
+        return 0
+
+    args.remaining_sec = remain_sec
+    args.have_records = have_records
+
     stop = Event()
-    counter = Value('q', 0)
+    # 计数从已有记录数起算，这样 --records 的语义也是「累计」
+    counter = Value('q', have_records)
     procs = []
     for wid in range(args.workers):
         p = Process(target=worker, args=(wid, args, counter, stop), daemon=False)
@@ -418,31 +494,40 @@ def main():
         while any(p.is_alive() for p in procs):
             time.sleep(20)
             el = time.time() - t0
-            recs = counter.value
-            eta = (args.minutes * 60 - el)
-            print('>>> 汇总：%d 局面，已跑 %.0f 分钟，速率 %.0f 局面每秒，剩余 %.0f 分钟'
-                  % (recs, el / 60, recs / max(el, 1e-9), max(eta, 0) / 60), flush=True)
+            recs = counter.value - have_records
+            eta = remain_sec - el
+            print('>>> 本轮 %d 局面（累计 %d），本轮已跑 %.0f 分钟，速率 %.0f 局面每秒，'
+                  '本次剩余 %.0f 分钟'
+                  % (recs, counter.value, el / 60, recs / max(el, 1e-9),
+                     max(eta, 0) / 60), flush=True)
+            # 每 20 秒记一次账：真断电了也只丢这 20 秒
+            resume.update_progress(args.out, elapsed_sec=done_sec + el,
+                                   records=counter.value,
+                                   minutes_target=args.minutes)
     except KeyboardInterrupt:
         print('\n收到中断信号，正在让各 worker 收尾…')
         stop.set()
     finally:
         for p in procs:
             p.join(timeout=120)
+        resume.update_progress(args.out, elapsed_sec=done_sec + (time.time() - t0),
+                               records=counter.value, minutes_target=args.minutes)
 
-    total = counter.value
+    this_run = counter.value - have_records
     el = time.time() - t0
     print()
     print('=' * 64)
-    print('完成：共 %d 局面，用时 %.1f 分钟，平均 %.0f 局面每秒' % (total, el / 60, total / max(el, 1e-9)))
-    print('数据分片：')
+    print('本轮完成：新增 %d 局面，用时 %.1f 分钟，平均 %.0f 局面每秒'
+          % (this_run, el / 60, this_run / max(el, 1e-9)))
+    print('数据分片（含之前几次跑出来的）：')
     grand = 0
-    for wid in range(args.workers):
-        path = os.path.join(args.out, 'part_%02d.bin' % wid)
-        if os.path.isfile(path):
-            size = os.path.getsize(path)
-            cnt = size // REC_SIZE
-            grand += cnt
-            print('  part_%02d.bin  %12d 条  %8.1f MB' % (wid, cnt, size / 1024 / 1024))
+    # 直接扫目录，而不是按当前 workers 数循环 —— 上次用 14 个 worker、
+    # 这次改成 8 个的话，part_08..13 仍然要统计进来
+    for path, cnt in resume.scan_shards(args.out, REC_SIZE):
+        size = os.path.getsize(path)
+        grand += cnt
+        print('  %-16s %12d 条  %8.1f MB'
+              % (os.path.basename(path), cnt, size / 1024 / 1024))
     print('合计 %d 条记录，%.2f GB' % (grand, grand * REC_SIZE / 1024 / 1024 / 1024))
     print('=' * 64)
 
