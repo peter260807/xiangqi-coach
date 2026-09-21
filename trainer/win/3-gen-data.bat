@@ -1,19 +1,27 @@
 @echo off
+rem ===================================================================
+rem  Keep this file PURE ASCII. Do not add non-ASCII characters.
+rem  cmd.exe reads .bat using the system OEM code page (936/GBK on
+rem  Chinese Windows). UTF-8 CJK text gets mis-decoded and can break
+rem  parsing so the script fails to run. "chcp 65001" only changes
+rem  console OUTPUT, not how cmd READS the file.
+rem ===================================================================
 chcp 65001 >nul
-setlocal enabledelayedexpansion
+setlocalenabledelayedexpansion
+set PYTHONIOENCODING=utf-8
+set PYTHONUTF8=1
 cd /d "%~dp0.."
 
 echo ================================================================
-echo  步骤 3 / 5   生成训练数据（这一步最耗时间）
+echo  Step 3/5 - Generate training data (this takes hours)
 echo ================================================================
 echo.
 
 rem ===================================================================
-rem  可以按需要改下面这几个参数
-rem
-rem  WORKERS  并行进程数。5700X 是 8 核 16 线程，建议 14（留 2 线程给系统）
-rem  DEPTH    每步搜索深度。8 是比较均衡的档位，调到 10~12 数据质量更高但更慢
-rem  MINUTES  跑多少分钟。180 = 3 小时
+rem  Tunable parameters
+rem  WORKERS  parallel processes. 5700X is 8C/16T, 14 works well.
+rem  DEPTH    search depth per move. 8 is a good balance.
+rem  MINUTES  how long to run. 180 = 3 hours.
 rem ===================================================================
 set WORKERS=14
 set DEPTH=8
@@ -25,8 +33,8 @@ for %%f in (engine\pikafish.exe) do if exist "%%f" set ENGINE=%%~ff
 if "!ENGINE!"=="" for %%f in (engine\pikafish*.exe) do if exist "%%f" set ENGINE=%%~ff
 
 if "!ENGINE!"=="" (
-  echo [失败] 在 engine\ 目录里没找到 pikafish*.exe
-  echo        请先按 2-selfcheck.bat 的提示把引擎放进去。
+  echo [FAIL] No pikafish*.exe found in the engine\ folder.
+  echo        See the instructions in 2-selfcheck.bat.
   echo.
   pause
   exit /b 1
@@ -36,24 +44,23 @@ set NNUE=
 for %%f in (engine\*.nnue) do if exist "%%f" set NNUE=%%~ff
 
 if "!NNUE!"=="" (
-  echo [失败] 在 engine\ 目录里没找到 .nnue 权重文件
-  echo        引擎需要它才能工作，请把 pikafish.nnue 放到引擎同目录。
+  echo [FAIL] No .nnue weight file found in the engine\ folder.
+  echo        Copy pikafish.nnue next to the exe.
   echo.
   pause
   exit /b 1
 )
 
-for %%d in (data) do if not exist "%%d" mkdir "%%d" 2>nul
+if not exist "data" mkdir "data" 2>nul
 
-echo 引擎      : !ENGINE!
-echo 权重      : !NNUE!
-echo 并行进程  : %WORKERS%
-echo 搜索深度  : %DEPTH%
-echo 运行时长  : %MINUTES% 分钟
-echo 输出目录  : data\
+echo Engine     : !ENGINE!
+echo Weights    : !NNUE!
+echo Workers    : %WORKERS%
+echo Depth      : %DEPTH%
+echo Duration   : %MINUTES% minutes
+echo Output     : data\
 echo.
-echo 预计产出：约 %WORKERS% x 900 x %MINUTES% 个局面（数量级参考）
-echo 按 Ctrl+C 可以提前结束，已生成的数据不会丢。
+echo Press Ctrl+C to stop early. Generated data is kept.
 echo.
 echo ----------------------------------------------------------------
 echo.
@@ -61,6 +68,6 @@ echo.
 python src\gen_data.py --engine "!ENGINE!" --nnue "!NNUE!" --workers %WORKERS% --depth %DEPTH% --minutes %MINUTES% --out data
 
 echo.
-echo 下一步跑：4-train.bat
+echo Next step: run 4-train.bat
 echo.
 pause

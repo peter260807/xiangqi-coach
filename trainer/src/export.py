@@ -32,6 +32,15 @@
 和 PyTorch 的输出逐样本对比。两边对不上就说明导出有问题，会直接报错。
 """
 
+# 控制台编码兜底：Windows 的 cmd 默认是 GBK(936)，遇到它表示不了的字符
+# 会抛 UnicodeEncodeError 而中断整个脚本。这里退化成替换而不是崩溃。
+import sys as _sys
+for _s in (_sys.stdout, _sys.stderr):
+    try:
+        _s.reconfigure(errors='replace')
+    except Exception:
+        pass
+del _sys, _s
 import argparse
 import os
 import struct

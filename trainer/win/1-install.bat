@@ -1,10 +1,19 @@
 @echo off
+rem ===================================================================
+rem  Keep this file PURE ASCII. Do not add non-ASCII characters.
+rem  cmd.exe reads .bat using the system OEM code page (936/GBK on
+rem  Chinese Windows). UTF-8 CJK text gets mis-decoded and can break
+rem  parsing so the script fails to run. "chcp 65001" only changes
+rem  console OUTPUT, not how cmd READS the file.
+rem ===================================================================
 chcp 65001 >nul
 setlocal
+set PYTHONIOENCODING=utf-8
+set PYTHONUTF8=1
 cd /d "%~dp0.."
 
 echo ================================================================
-echo  步骤 1 / 5   安装依赖
+echo  Step 1/5 - Install dependencies
 echo ================================================================
 echo.
 
@@ -12,47 +21,47 @@ where python >nul 2>nul
 if errorlevel 1 goto NOPYTHON
 
 for /f "tokens=2" %%v in ('python --version 2^>^&1') do set PYVER=%%v
-echo 检测到 Python %PYVER%
+echo Found Python %PYVER%
 
 python -c "import sys; sys.exit(0 if sys.version_info>=(3,9) else 1)"
 if errorlevel 1 goto OLDPY
 echo.
 
-echo [1/3] 升级 pip ...
+echo [1/3] Upgrading pip ...
 python -m pip install --upgrade pip --quiet
-echo [2/3] 安装 numpy ...
+echo [2/3] Installing numpy ...
 python -m pip install numpy --quiet
-echo [3/3] 安装 PyTorch（带 CUDA，下载量较大请耐心等待）...
-echo       注意锁定了 2.8.0 版本 —— 2.9.x 在 Windows 上有已知的
-echo       c10.dll 初始化失败问题，很多人反馈回退到 2.8.0 就好了。
+echo [3/3] Installing PyTorch (CUDA build, large download) ...
+echo       NOTE: version is pinned to 2.8.0. PyTorch 2.9.x has a
+echo       known c10.dll initialization bug on Windows.
 python -m pip install "torch==2.8.0" --quiet
 
 echo.
 echo ----------------------------------------------------------------
-echo 检查 GPU 是否可用
+echo  Checking GPU
 echo ----------------------------------------------------------------
-python -c "import torch;print('  PyTorch 版本:',torch.__version__);print('  CUDA 可用  :',torch.cuda.is_available());print('  CUDA 版本  :',torch.version.cuda);print('  设备       :',torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU（训练会慢很多）')"
+python -c "import torch;print('  PyTorch version :',torch.__version__);print('  CUDA available  :',torch.cuda.is_available());print('  CUDA version    :',torch.version.cuda);print('  Device          :',torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU (training will be much slower)')"
 
 echo.
-echo 安装完成。下一步跑：2-selfcheck.bat
+echo Done. Next step: run 2-selfcheck.bat
 echo.
 pause
 exit /b 0
 
 :NOPYTHON
-echo [失败] 没有找到 python 命令。
+echo [FAIL] python command not found.
 echo.
-echo 请先安装 Python（3.10 或更高版本）：
+echo Please install Python 3.10 or newer first:
 echo   https://www.python.org/downloads/
 echo.
-echo 安装时务必勾选 "Add python.exe to PATH"，否则命令行里找不到它。
+echo Make sure to tick "Add python.exe to PATH" during installation.
 echo.
 pause
 exit /b 1
 
 :OLDPY
 echo.
-echo [失败] Python 版本低于 3.9，请升级。
+echo [FAIL] Python version is older than 3.9. Please upgrade.
 echo.
 pause
 exit /b 1

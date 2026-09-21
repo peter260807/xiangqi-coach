@@ -9,6 +9,15 @@
 3. 抽样对照 —— 随机挑几个局面，把棋盘、引擎评分、网络预测并排打出来看
 """
 
+# 控制台编码兜底：Windows 的 cmd 默认是 GBK(936)，遇到它表示不了的字符
+# 会抛 UnicodeEncodeError 而中断整个脚本。这里退化成替换而不是崩溃。
+import sys as _sys
+for _s in (_sys.stdout, _sys.stderr):
+    try:
+        _s.reconfigure(errors='replace')
+    except Exception:
+        pass
+del _sys, _s
 import argparse
 import os
 import sys

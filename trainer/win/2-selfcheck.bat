@@ -1,15 +1,24 @@
 @echo off
+rem ===================================================================
+rem  Keep this file PURE ASCII. Do not add non-ASCII characters.
+rem  cmd.exe reads .bat using the system OEM code page (936/GBK on
+rem  Chinese Windows). UTF-8 CJK text gets mis-decoded and can break
+rem  parsing so the script fails to run. "chcp 65001" only changes
+rem  console OUTPUT, not how cmd READS the file.
+rem ===================================================================
 chcp 65001 >nul
 setlocal
+set PYTHONIOENCODING=utf-8
+set PYTHONUTF8=1
 cd /d "%~dp0.."
 
 echo ================================================================
-echo  步骤 2 / 5   环境自检
+echo  Step 2/5 - Environment self-check
 echo ================================================================
 echo.
 
 if not exist "engine" (
-  echo [提示] 还没有 engine 目录，正在创建 ...
+  echo [INFO] No engine folder yet, creating it ...
   mkdir "engine" 2>nul
 )
 
@@ -19,16 +28,16 @@ for %%f in (engine\pikafish*.exe) do if exist "%%f" set HAVEENGINE=1
 
 if "%HAVEENGINE%"=="0" (
   echo ----------------------------------------------------------------
-  echo [需要手动做一步] 把 Pikafish 引擎放进来
+  echo [ACTION REQUIRED] Put the Pikafish engine in place
   echo ----------------------------------------------------------------
   echo.
-  echo  1. 打开 https://github.com/official-pikafish/Pikafish/releases
-  echo  2. 下载最新的 Pikafish.YYYY-MM-DD.7z
-  echo  3. 解压，把里面的这两类文件复制到本目录的 engine\ 文件夹：
-  echo       Pikafish-Windows-x86-64-universal.exe   （建议改名为 pikafish.exe）
-  echo       pikafish.nnue                           （神经网络权重，约 50MB）
+  echo  1. Open https://github.com/official-pikafish/Pikafish/releases
+  echo  2. Download the latest Pikafish.YYYY-MM-DD.7z
+  echo  3. Extract it, then copy these two files into the engine\ folder:
+  echo       Pikafish-Windows-x86-64-universal.exe  (rename to pikafish.exe)
+  echo       pikafish.nnue                          (about 50 MB)
   echo.
-  echo  注意：exe 和 nnue 必须放在同一个目录里。
+  echo  The exe and the nnue file MUST be in the same folder.
   echo.
 )
 

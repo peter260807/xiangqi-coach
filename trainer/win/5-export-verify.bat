@@ -1,22 +1,31 @@
 @echo off
+rem ===================================================================
+rem  Keep this file PURE ASCII. Do not add non-ASCII characters.
+rem  cmd.exe reads .bat using the system OEM code page (936/GBK on
+rem  Chinese Windows). UTF-8 CJK text gets mis-decoded and can break
+rem  parsing so the script fails to run. "chcp 65001" only changes
+rem  console OUTPUT, not how cmd READS the file.
+rem ===================================================================
 chcp 65001 >nul
 setlocal
+set PYTHONIOENCODING=utf-8
+set PYTHONUTF8=1
 cd /d "%~dp0.."
 
 echo ================================================================
-echo  步骤 5 / 5   导出网络 + 验证效果
+echo  Step 5/5 - Export the network and verify it
 echo ================================================================
 echo.
 
 if not exist "logs\weights.pt" (
-  echo [失败] 找不到 logs\weights.pt，请先跑 4-train.bat 完成训练。
+  echo [FAIL] logs\weights.pt not found. Run 4-train.bat first.
   echo.
   pause
   exit /b 1
 )
 
 echo ----------------------------------------------------------------
-echo  导出为引擎可加载的格式
+echo  Exporting to engine-loadable format
 echo ----------------------------------------------------------------
 echo.
 python src\export.py --weights logs\weights.pt --out logs\xq-v1.xqnn
@@ -24,30 +33,30 @@ if errorlevel 1 goto EXPORTFAIL
 
 echo.
 echo ----------------------------------------------------------------
-echo  验证训练效果
+echo  Verifying quality
 echo ----------------------------------------------------------------
 echo.
 python src\verify.py --data data --net logs\xq-v1.xqnn --samples 4000 --show 3
 
 echo.
 echo ================================================================
-echo  完成
+echo  Done
 echo ================================================================
 echo.
-echo 产出文件：
-echo   logs\xq-v1.xqnn   最终网络（引擎可以加载这个文件）
-echo   logs\weights.pt   训练权重（可以继续训练）
-echo   logs\train.log    训练日志
-echo   data\part_*.bin   训练数据（确认没问题后可以删掉腾空间）
+echo Output files:
+echo   logs\xq-v1.xqnn   final network (this is what the engine loads)
+echo   logs\weights.pt   training weights (keep for further training)
+echo   logs\train.log    training log
+echo   data\part_*.bin   training data (safe to delete after training)
 echo.
-echo 把 logs\xq-v1.xqnn 连同上面这份验证输出发回来即可。
+echo Send back logs\xq-v1.xqnn plus the verification output above.
 echo.
 pause
 exit /b 0
 
 :EXPORTFAIL
 echo.
-echo [失败] 导出过程出错，请把上面的报错信息发回来。
+echo [FAIL] Export failed. Send back the error message above.
 echo.
 pause
 exit /b 1
