@@ -98,18 +98,96 @@ xcodebuild -project XiangqiCoach.xcodeproj -scheme XiangqiCoach \
 | 设备 | 布局 |
 |---|---|
 | iPhone | 竖屏为主（也允许横屏）。单列：棋盘在上，操作与记录在下 |
-| **iPad** | **固定横屏**。左右分栏：棋盘吃满左侧可用高度，操作与棋谱记录在右栏 |
+| **iPad 横屏** | 左右分栏：棋盘吃满左侧可用高度，操作与棋谱记录在右栏 |
+| **iPad 竖屏** | **棋盘全屏**：取消分栏，棋盘按「宽、高里更紧的那一维」放大到极限；顶部只留胜率条 + 一条状态，底部一排按钮（提示 / 悔棋 / 重开 / 点评 / 更多），场景、难度、对弈模式、棋谱都收进「更多」浮层 |
 | 训练 / 战绩页 | 列表按可用宽度自动分列，手机一列、iPad 三列 |
 
-**iPad 为什么锁横屏**：棋盘是横向铺开的，竖屏下宽度不够、只能把棋盘压小，
-两侧还空出大片区域。横屏之后高度成了限制条件，棋盘反而能撑到最大。
+**为什么竖屏反而更好用**：iPad 竖屏的可用宽度就有约 1000pt，而横屏分栏时棋盘还要
+让位给右栏，只剩约 620pt。所以竖屏改成单栏、棋盘铺满之后，**棋盘比横屏还大一截**
+（宽度 620 → 约 990pt，面积约 2.6 倍）。
 
-棋盘尺寸不是写死的：先按「屏幕高度 − 胜率条 − 状态条」反推出棋盘能有多大，
+**判断横竖屏不能看尺寸类**：iPad 横屏、竖屏的 `horizontalSizeClass` / `verticalSizeClass`
+**都是 regular/regular**，用尺寸类区分不开 —— 之前 iPad 竖屏因此也走了左右分栏，
+棋盘被挤在左边。现在改成看几何（`geo.size.height > geo.size.width`），见
+`PlayView.layoutMode(portrait:)`。
+
+横屏下也能手动进全屏：右栏最上面那个「棋盘全屏」按钮；全屏时左上角会出现退出按钮。
+
+> 模拟器没法用命令旋转屏幕，所以留了 `SIMCTL_CHILD_START_LAYOUT=focus|wide|compact`
+> 这个环境变量口子，可以让自动化截图分别截到三套布局。
+
+棋盘尺寸不是写死的：横屏先按「屏幕高度 − 胜率条 − 状态条」反推出棋盘能有多大，
 再让右栏吃掉剩下的**全部**宽度 —— 这样两栏都不留空白，换任何尺寸的 iPad 都不会错位。
 
 iPhone 侧则用 `horizontalSizeClass == .regular && verticalSizeClass == .regular`
 判断要不要分栏。只看宽度是不够的：**iPhone 横屏的宽度同样算 `.regular`，但高度很紧**，
 那时候竖排反而更好用。
+
+#### 应用图标
+
+`ios/XiangqiCoach/Resources/Assets.xcassets/AppIcon.appiconset/` 里的
+`AppIcon-1024.png` 是脚本生成的（红底 + 淡棋盘网格 + 木质「帅」棋子），
+同一份设计也导出到了网页侧：`web/icon-192.png`、`web/apple-touch-icon.png`、
+`web/favicon-32.png`。
+
+**注意**：`Contents.json` 里没有 `filename` 字段时，图标资源是空的 —— 编译不报错，
+桌面上却是白图标。验证有没有真的编进包：
+
+```bash
+xcrun assetutil --info "…/象棋教练.app/Assets.car" | grep -A2 "Icon Image"
+# 应能看到 RenditionName : AppIcon-1024.png
+```
+
+#### 装到真机（iPad / iPhone）
+
+模拟器不用签名，真机要。仓库里带了一个打包脚本：
+
+```bash
+./ios/scripts/make-ipa.sh --devices               # 列设备 + 硬件 UDID + 开发者模式状态
+./ios/scripts/make-ipa.sh --list-devices          # 列本机描述文件及其授权设备
+./ios/scripts/make-ipa.sh --udid <设备UDID>        # 打 ad hoc 包，并校验该设备已授权
+./ios/scripts/make-ipa.sh --development           # 开发签名（不需要 ad hoc 描述文件）
+./ios/scripts/make-ipa.sh --udid <U> --install <U>  # 打完直接装到连着的数据线设备
+```
+
+产物落在 `.workbuddy/outputs/`（该目录不进仓库）。
+
+**走数据线安装有两道互相独立的关卡，都得过：**
+
+| 关卡 | 不过时的报错 | 怎么过 |
+|---|---|---|
+| 开发者模式 | `Developer Mode is disabled` | 设置 → 隐私与安全性 → 开发者模式 → 打开并重启 |
+| 描述文件的设备名单 | `0xe8008012 / cannot be installed on this device` | 把 UDID 加进描述文件（见下） |
+
+> 第一道**与签名方式无关**：实测 ad-hoc 签名的包走数据线同样被它拦住。
+> 「ad hoc 免开发者模式」只对 OTA / Apple Configurator 那类安装方式成立。
+
+**ad hoc 描述文件是唯一没法脚本化的部分** —— 它需要开发者后台权限：
+
+1. https://developer.apple.com/account/resources/devices/list → `+` → 粘贴设备 UDID
+2. https://developer.apple.com/account/resources/profiles/list → `+` → **Ad Hoc**
+   → **App ID 选通配**（形如 `TEAMID.*`，本机叫 `XC Wildcard`）
+   → 选 Apple Distribution 证书 → 勾上设备 → `Generate` → 下载
+3. **双击安装**下载的 `.mobileprovision` 即可，不用再改任何配置
+
+第 2 步**强烈建议选通配 App ID**：一份描述文件覆盖团队下所有 App，
+以后新增 App 不用再走一遍后台流程。实测可用，且是分发签名（`get-task-allow=false`），
+装的时候不需要开发者模式。
+
+**为什么不用开发签名图省事**：iOS 16 起，开发签名的 App 要求设备先打开开发者模式并重启；
+ad hoc 没有这个要求。自己临时试可以 `--development`，要交给别人装就走 ad hoc。
+
+**拿 UDID**：直接跑 `--devices`，它会把硬件 UDID 列出来（**不是** devicectl 表格里那个
+coredevice UUID，那个填到后台无效）。也可以设备连上后在「访达」左侧选中它，
+点设备名下方那行信息循环切换，切到「序列号」时再点一下会变成 UDID。
+
+打完之后脚本会**校验目标 UDID 在不在描述文件的授权名单里**，不在就直接报错。
+这一步不能省：设备不在名单里时，iPad 上只会弹一句含糊的「无法安装此 App」，
+完全看不出是签名名单的问题，能耗掉半天。
+
+> 脚本会**自动识别**可用的 ad-hoc 描述文件（分发签名 + 带设备名单 + App 匹配或团队通配），
+> 并在导出时现场生成对应的签名配置 —— 描述文件装在哪个目录都能找到
+> （`~/Library/MobileDevice/` 或 `~/Library/Developer/Xcode/UserData/`，两处都扫）。
 
 ---
 
@@ -140,15 +218,24 @@ DeepSeek 的 `deepseek-flash` / `deepseek-v4-pro` 都是**推理模型**，
 会先输出一长段思维链，而**思维链计入 `max_tokens`**。给少了正文就是空的，
 而 HTTP 状态码依然是 200，没有任何报错。实测：
 
-| 任务 | 思维链消耗 | 建议 max_tokens |
+| 任务 | 思维链消耗 | 现在的预算 |
 |---|---|---|
-| 短问答 | ~43 | 1500 |
-| 局面点评 | ~770 | **4000** |
-| 整局复盘 | 4855~5284 | **8000** |
+| 短问答（连通性测试） | ~43 | 1500（单独指定，图快） |
+| 局面点评 | 770~6800 | 跟随设置，默认 **50000** |
+| 整局复盘 | 4855~5284 | 跟随设置，默认 **50000** |
+| 混合对弈里的选着法 | 5000+ | 跟随设置，默认 **50000** |
 
 实测 `max_tokens=5000` 做复盘时，正文 179 字**中途被截断**（`finish_reason=length`）。
-客户端已内置三道保险：正文为空但有思维链则自动加倍重试、检测到截断会明确提示、
+客户端有三道保险：正文为空但有思维链则自动加倍重试、检测到截断会明确提示、
 流式失败自动退回一次性请求。
+
+**预算给足不会多花钱**：`max_tokens` 只是上限，按**实际**产出计费。
+所以默认值直接给到 5 万（接口实测连 20 万都收），需要时可在「设置 → 模型参数」里改。
+
+> 曾经有个隐蔽的瓶颈：代码里写死 `min(base * 2, 16000)`，
+> **设置里调多大都会被压回 16000**。这个硬顶已经去掉，只留一个远高于各家上限的
+> 天花板；万一对端嫌 `max_tokens` 太大（各家上限 8K / 16K / 64K 都有），
+> 会自动退到 8192 重试一次，而不是让整个功能报错。
 
 ---
 

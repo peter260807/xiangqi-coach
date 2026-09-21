@@ -54,3 +54,19 @@ trainer/data/
 trainer/logs/
 _train*/
 
+# 拷去 Windows 跑整条流水线的压缩包（临时产物，随时可重新生成）
+/*.zip
+
+# ---------- iOS 打包产物与本地配置 ----------
+# 与 WeiLian 项目同一套做法：导出配置（含 Team ID、描述文件映射）和 .ipa
+# 都放这里，不进仓库。生成工程时用 TEAM_ID=<你的团队> xcodegen generate。
+.workbuddy/
+ios/archive/
+*.ipa
+
+
+# net-in-engine 的派生产物：14MB 权重 JSON、参考值、打过补丁的引擎副本
+# 都可用 tools/net-in-engine 下的脚本随时重新生成
+tools/net-in-engine/net_d512.json
+tools/net-in-engine/ref_cp.json
+tools/net-in-engine/engine.js
