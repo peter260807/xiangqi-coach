@@ -26,6 +26,9 @@
 | `Pikafish-Windows-x86-64-universal.exe` | `engine\pikafish.exe` | 建议改名，方便脚本识别 |
 | `pikafish.nnue` | `engine\pikafish.nnue` | 约 50 MB，**必须和 exe 放同一目录** |
 
+**放进去就行，不需要改任何配置。** 脚本会自己在这个目录里找，也允许你解压时
+多套了一层目录。万一找不到，它会把该目录的实际内容列出来给你看。
+
 > ⚠️ 注意从官方仓库 `official-pikafish/Pikafish` 下载。网上有不少仿冒站，
 > 同一件事一会儿说基于 NNUE 一会儿说基于 MCTS，协议和版本号还互相矛盾。
 
@@ -226,8 +229,36 @@ cp     = 400 * ln(prob / (1 - prob))                 // 换算成引擎惯用的
 
 ## 六、常见问题
 
-**Q：`2-selfcheck.bat` 说找不到引擎**
-把 `pikafish*.exe` 和 `pikafish.nnue` 放进本目录的 `engine\` 文件夹，两者必须在同一层。
+**Q：说找不到引擎，但我明明放进去了**
+
+脚本会把你 `engine` 目录里**实际看到的内容**列出来，先对着那个清单排查：
+
+1. **位置对不对** —— 应该是 `trainer/engine/`，不是 `trainer/` 根目录，
+   也不是 `win/engine/`
+2. **exe 和 `.nnue` 是不是同一层** —— 引擎只会去 exe 旁边找权重
+3. **是不是解压多套了几层目录** —— 多套一层也能找到，套两层以上就不行了
+
+实在理不清，直接用完整路径绕开自动查找：
+
+```bat
+python src/gen_data.py --engine "D:/pikafish/pikafish.exe" --out data
+```
+
+**Q：双击 bat 一闪就没了，看不到报错**
+
+在 `trainer` 目录里开一个 cmd，直接敲 bat 的名字（不要双击）：
+
+```bat
+cd /d 你的 trainer 目录
+win\3-gen-data.bat
+```
+
+窗口会停住，报错也就留在屏幕上了。或者绕开 bat 直接跑 Python，
+参数和 bat 里完全一样：
+
+```bat
+python src/gen_data.py --workers 14 --depth 8 --minutes 180 --out data
+```
 
 **Q：引擎启动失败 / 权重加载不了**
 多半是 exe 和 nnue 版本不匹配。用同一个发布包里的这两个文件，
@@ -314,9 +345,12 @@ trainer\
 │   ├── verify.py          效果验证
 │   └── selfcheck.py       环境自检（含显卡诊断）
 ├── tests\                 打包者的自测脚本，跑训练用不到
-│   ├── test_selfcheck_branches.py   把 Windows 上五种显卡情况都逼出来验证诊断
+│   ├── test_bat_syntax.py           检查 bat 命令格式（少一个空格这种错肉眼看不出来）
 │   ├── test_bat_args.py             核对 bat 传给 Python 的参数脚本真的支持
-│   └── test_doc_refs.py             核对文档里提到的文件名都真实存在
+│   ├── test_engine_lookup.py        验证引擎在六种放置方式下都能被找到
+│   ├── test_doc_refs.py             核对文档里提到的文件名都真实存在
+│   ├── test_selfcheck_branches.py   把 Windows 上五种显卡情况都逼出来验证诊断
+│   └── bench_train_step.py          拆解训练单步耗时与显存需求（换机器时跑一遍）
 ├── data\                  生成的数据（跑完才出现）
 └── logs\                  训练产出（跑完才出现）
 ```

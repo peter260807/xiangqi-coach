@@ -1,13 +1,22 @@
 @echo off
 rem ===================================================================
 rem  Keep this file PURE ASCII. Do not add non-ASCII characters.
-rem  cmd.exe reads .bat using the system OEM code page (936/GBK on
+rem
+rem  cmd.exe reads a .bat using the system OEM code page (936/GBK on
 rem  Chinese Windows). UTF-8 CJK text gets mis-decoded and can break
-rem  parsing so the script fails to run. "chcp 65001" only changes
-rem  console OUTPUT, not how cmd READS the file.
+rem  parsing. "chcp 65001" only changes console OUTPUT, not how cmd
+rem  READS the file.
+rem
+rem  Also: do NOT do path detection in here. An earlier version tried to
+rem  locate the engine with "for" loops plus delayed expansion, and a
+rem  missing space in "setlocal enabledelayedexpansion" silently turned
+rem  it into one unknown command -- so !ENGINE! never expanded and the
+rem  literal text "!ENGINE!" got passed to Python. The scripts now hand
+rem  no paths at all; gen_data.py finds the engine itself and prints a
+rem  clear message plus the folder listing if it cannot.
 rem ===================================================================
 chcp 65001 >nul
-setlocalenabledelayedexpansion
+setlocal
 set PYTHONIOENCODING=utf-8
 set PYTHONUTF8=1
 cd /d "%~dp0.."
@@ -16,12 +25,12 @@ echo ================================================================
 echo  Unattended run: generate data - train - export and verify
 echo ================================================================
 echo.
-echo Requires: 1-install.bat already done, 2-selfcheck.bat passed.
+echo Requires: 1-install.bat already done, and 2-selfcheck.bat passed.
 echo You can start this and walk away. Check back later for results.
 echo.
 
 rem ===================================================================
-rem  Defaults tuned for 5700X + 2080Ti, roughly 5-8 hours total.
+rem  Defaults tuned for 8C/16T + a mid-range GPU, roughly 5-8 hours.
 rem ===================================================================
 set WORKERS=14
 set DEPTH=8
@@ -31,31 +40,13 @@ set BATCH=8192
 set LR=0.001
 rem ===================================================================
 
-set ENGINE=
-for %%f in (engine\pikafish.exe) do if exist "%%f" set ENGINE=%%~ff
-if "!ENGINE!"=="" for %%f in (engine\pikafish*.exe) do if exist "%%f" set ENGINE=%%~ff
-
-set NNUE=
-for %%f in (engine\*.nnue) do if exist "%%f" set NNUE=%%~ff
-
-if "!ENGINE!"=="" (
-  echo [FAIL] No engine found. Put Pikafish into the engine\ folder.
-  pause
-  exit /b 1
-)
-if "!NNUE!"=="" (
-  echo [FAIL] No .nnue weights found. Copy pikafish.nnue next to the exe.
-  pause
-  exit /b 1
-)
-
 if not exist "data" mkdir "data"
 if not exist "logs" mkdir "logs"
 
 echo ================================================================
 echo  [1/3] Generating data   started at %TIME%
 echo ================================================================
-python src\gen_data.py --engine "!ENGINE!" --nnue "!NNUE!" --workers %WORKERS% --depth %DEPTH% --minutes %GENMINUTES% --out data
+python src\gen_data.py --workers %WORKERS% --depth %DEPTH% --minutes %GENMINUTES% --out data
 if errorlevel 1 goto FAIL
 
 echo.
@@ -90,8 +81,16 @@ exit /b 0
 :FAIL
 echo.
 echo ================================================================
-echo  Something failed. Send back the error above.
+echo  Failed. Read the message above first.
 echo ================================================================
+echo.
+echo  Most common cause: the engine is not in the engine\ folder.
+echo  Put these two files there, side by side:
+echo.
+echo    Pikafish-Windows-x86-64-universal.exe   rename to pikafish.exe
+echo    pikafish.nnue                           about 50 MB
+echo.
+echo  Download: https://github.com/official-pikafish/Pikafish/releases
 echo.
 pause
 exit /b 1

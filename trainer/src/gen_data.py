@@ -27,6 +27,7 @@ for _s in (_sys.stdout, _sys.stderr):
         pass
 del _sys, _s
 import argparse
+import glob
 import math
 import os
 import random
@@ -43,6 +44,87 @@ from uci import EngineError, UciEngine       # noqa: E402
 # 每条记录 93 字节：棋盘 90 + cp 分 2（int16）+ 走子方 1
 REC_DTYPE = np.dtype([('board', 'S90'), ('cp', '<i2'), ('side', 'u1')])
 REC_SIZE = REC_DTYPE.itemsize
+
+# 训练包根目录（src 的上一层），引擎固定放在它下面的 engine/
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ENGINE_DIR = os.path.join(ROOT, 'engine')
+
+
+def find_engine(explicit=None):
+    """找 Pikafish 可执行文件，找不到返回 None。
+
+    这件事刻意放在 Python 里做，而不是放在 .bat 里 —— 在 cmd 里靠 for
+    遍历加延迟展开去拼路径，既难写又难测，出错时的表现还只是"变量是空的"。
+    这里用 glob，规则一目了然，而且允许用户多套一层目录。
+    """
+    if explicit:
+        return explicit if os.path.isfile(explicit) else None
+
+    patterns = [
+        os.path.join(ENGINE_DIR, 'pikafish*.exe'),
+        os.path.join(ENGINE_DIR, 'Pikafish*.exe'),
+        os.path.join(ENGINE_DIR, '**', 'pikafish*.exe'),
+        os.path.join(ENGINE_DIR, '**', 'Pikafish*.exe'),
+        os.path.join(ENGINE_DIR, 'pikafish'),
+        os.path.join(ENGINE_DIR, '**', 'pikafish'),
+    ]
+    for pat in patterns:
+        hits = sorted(glob.glob(pat, recursive=True))
+        if hits:
+            return hits[0]
+
+    # 兜底：目录里任何一个 exe。从官网下载下来通常叫
+    # Pikafish-Windows-x86-64-universal.exe，用户不一定会改名。
+    # 引擎目录里一般就这一个可执行文件，用它基本不会错。
+    for pat in (os.path.join(ENGINE_DIR, '*.exe'),
+                os.path.join(ENGINE_DIR, '**', '*.exe')):
+        hits = sorted(glob.glob(pat, recursive=True))
+        if hits:
+            return hits[0]
+    return None
+
+
+def find_nnue(engine_path, explicit=None):
+    """找 NNUE 权重。
+
+    必须让引擎能找到它：要么和 exe 同目录（引擎默认会找同目录的 .nnue），
+    要么显式设 EvalFile。所以优先在 exe 旁边找。
+    """
+    if explicit:
+        return explicit if os.path.isfile(explicit) else None
+    if not engine_path:
+        return None
+    d = os.path.dirname(os.path.abspath(engine_path))
+    hits = sorted(glob.glob(os.path.join(d, '*.nnue')))
+    if not hits:
+        # 有些发布包解压出来会多一层目录
+        hits = sorted(glob.glob(os.path.join(d, '..', '*.nnue')))
+    return hits[0] if hits else None
+
+
+def describe_engine_dir():
+    """找不到引擎时把现场情况说清楚，省得用户来回猜。"""
+    lines = ['引擎目录：%s' % ENGINE_DIR]
+    if not os.path.isdir(ENGINE_DIR):
+        lines.append('这个目录还不存在 —— 需要先手动创建，再把引擎放进去。')
+        return '\n'.join(lines)
+
+    entries = sorted(os.listdir(ENGINE_DIR))
+    if not entries:
+        lines.append('目录是空的 —— 需要把 Pikafish 的 exe 和 .nnue 复制进来。')
+        return '\n'.join(lines)
+
+    lines.append('目录里现有 %d 项：' % len(entries))
+    for name in entries[:20]:
+        full = os.path.join(ENGINE_DIR, name)
+        if os.path.isdir(full):
+            lines.append('  [目录] %s' % name)
+        else:
+            lines.append('  %-46s %8.1f MB'
+                         % (name, os.path.getsize(full) / 1024 / 1024))
+    if len(entries) > 20:
+        lines.append('  ...（还有 %d 项）' % (len(entries) - 20))
+    return '\n'.join(lines)
 BATCH = 8192             # 攒够这么多条再落盘，减少 IO 次数
 MULTIPV_N = 6            # 开局随机阶段的候选数
 
@@ -208,8 +290,8 @@ def written_count(written, n):
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         description='Pikafish 自对弈生成 NNUE 训练数据')
-    ap.add_argument('--engine', required=True,
-                    help='Pikafish 可执行文件路径')
+    ap.add_argument('--engine', default=None,
+                    help='Pikafish 可执行文件路径；省略时自动在 engine/ 目录里找')
     ap.add_argument('--nnue', default=None,
                     help='NNUE 权重文件路径（引擎在同目录找得到时可省略）')
     ap.add_argument('--out', default='../data', help='输出目录')
@@ -233,9 +315,35 @@ def parse_args(argv=None):
 
 def main():
     args = parse_args()
+
+    if args.engine and not os.path.isfile(args.engine):
+        print('[失败] --engine 指定的文件不存在：%s' % args.engine)
+        return 1
+
+    args.engine = find_engine(args.engine)
+    if not args.engine:
+        print('=' * 64)
+        print('[失败] 没找到 Pikafish 引擎')
+        print('=' * 64)
+        print()
+        print('请把解压出来的这两个文件放进 engine/ 目录（两者必须在同一层）：')
+        print('  Pikafish-Windows-x86-64-universal.exe   （改名为 pikafish.exe 更省事）')
+        print('  pikafish.nnue                           （约 50 MB）')
+        print()
+        print('下载：https://github.com/official-pikafish/Pikafish/releases')
+        print()
+        print(describe_engine_dir())
+        return 1
+
     args.engine = os.path.abspath(args.engine)
+
+    args.nnue = find_nnue(args.engine, args.nnue)
     if args.nnue:
         args.nnue = os.path.abspath(args.nnue)
+    else:
+        print('[提示] engine/ 里没找到 .nnue 权重，交给引擎自己去旁边找。')
+        print('       若随后报权重加载失败，把 pikafish.nnue 放到 exe 同目录。')
+
     args.out = os.path.abspath(args.out)
     os.makedirs(args.out, exist_ok=True)
 
@@ -293,4 +401,5 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # 让 exit code 反映成功与否，bat 那边才能用 errorlevel 判断
+    sys.exit(main() or 0)

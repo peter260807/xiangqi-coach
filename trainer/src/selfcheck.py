@@ -202,27 +202,34 @@ def check_torch():
 
 
 def find_engine(explicit):
-    if explicit:
-        return explicit if os.path.isfile(explicit) else None
-    patterns = [
-        os.path.join(ROOT, 'engine', 'pikafish*.exe'),
-        os.path.join(ROOT, 'engine', 'pikafish'),
-        os.path.join(ROOT, 'engine', '**', 'pikafish*.exe'),
-        os.path.join(ROOT, 'engine', '**', 'pikafish'),
-    ]
-    for pat in patterns:
-        hits = sorted(glob.glob(pat, recursive=True))
-        if hits:
-            return hits[0]
-    return None
+    """复用 gen_data 里的查找实现，避免两处规则各写一份、日久天长不一致。
+
+    延迟导入是刻意的：numpy 没装的时候，前面几项检查仍要能跑完并给出
+    安装建议，不能被一个顶层 import 直接带崩。
+    """
+    sys.path.insert(0, HERE)
+    try:
+        from gen_data import find_engine as _find
+    except Exception:
+        return explicit if (explicit and os.path.isfile(explicit)) else None
+    return _find(explicit)
 
 
 def check_engine(path):
     if not path:
         line(FAIL, '未找到 Pikafish 引擎',
-             '把解压出来的 pikafish 可执行文件放进 trainer\\engine\\ 目录，\n'
-             '或者用 --engine 参数指定完整路径。\n'
+             '把引擎 exe 和 pikafish.nnue 放进 trainer 下的 engine 目录，\n'
+             '两者必须同一层。或者用 --engine 指定完整路径。\n'
              '下载：https://github.com/official-pikafish/Pikafish/releases')
+        # 把 engine 目录的实际内容直接打出来。否则用户只能猜：是没放进去、
+        # 还是文件名不对、还是解压多套了一层目录 —— 这三种都表现为"没找到"。
+        try:
+            sys.path.insert(0, HERE)
+            from gen_data import describe_engine_dir
+            for detail in describe_engine_dir().split('\n'):
+                print('          %s' % detail)
+        except Exception:
+            pass
         problems.append('引擎缺失')
         return None
 
