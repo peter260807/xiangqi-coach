@@ -1,12 +1,17 @@
 """
 验证训练出来的网络，产出一份人能看懂的结果报告。
 
-    python verify.py --data ../data --net ../logs/xq-v1.xqnn --samples 5000
+    python verify.py --data ../data --net ../logs/xq-v2.xqnn --samples 5000
 
-看三件事：
-1. 相关系数 —— 网络输出的胜率与 Pikafish 判断的一致程度，这是最核心的指标
-2. 分档准确度 —— 均势局面和一边倒局面，各自预测得准不准
-3. 抽样对照 —— 随机挑几个局面，把棋盘、引擎评分、网络预测并排打出来看
+看四件事：
+1. 整体相关系数 —— 网络输出分值与 Pikafish 判断的一致程度
+2. **均势档相关系数** —— |cp|<100 的局面单独算一次。这一项才是关键指标：
+   整体相关系数会被少量一边倒的局面撑得虚高（v1 报 0.9797），而均势局面
+   占了样本的 57%，恰恰是排序最需要分辨力的地方（v1 实际只有 0.62）
+3. 分档表现 —— 各分值区间内预测得准不准
+4. 抽样对照 —— 随机挑几个局面，把棋盘、引擎评分、网络预测并排打出来看
+
+    python verify.py --data ../data --net ../logs/xq-v2.xqnn --samples 4000 --show 3
 """
 
 # 控制台编码兜底：Windows 的 cmd 默认是 GBK(936)，遇到它表示不了的字符
@@ -27,7 +32,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from export import NumpyNet                      # noqa: E402
 from gen_data import REC_DTYPE                   # noqa: E402
-from model import CP_SCALE, PAD_INDEX            # noqa: E402
+from model import PAD_INDEX                      # noqa: E402
 from train import compute_features, load_dataset  # noqa: E402
 
 
@@ -39,6 +44,12 @@ def render(rows):
         out.append('   %d  %s' % (9 - r, cells))
     out.append('      a b c d e f g h i')
     return '\n'.join(out)
+
+
+def corr(a, b):
+    if len(a) < 10 or a.std() == 0 or b.std() == 0:
+        return float('nan')
+    return float(np.corrcoef(a, b)[0, 1])
 
 
 def main():
@@ -65,27 +76,34 @@ def main():
 
     boards = np.ascontiguousarray(data['board'][idxs]).view(np.uint8).reshape(n, 90)
     sides = data['side'][idxs].astype(np.uint8)
-    cps = data['cp'][idxs].astype(np.int32)
-    target = 1.0 / (1.0 + np.exp(-cps.astype(np.float32) / CP_SCALE))
+    cps = data['cp'][idxs].astype(np.float64)
 
     net = NumpyNet(args.net)
+    print()
+    print('  网络结构：%d -> %d -> %d -> 1，输出 1.0 = %.0f 分'
+          % (net.feat_dim, net.l1, net.l2, net.output_scale))
+
     feats = compute_features(boards, sides)
     feat_lists = [[int(v) for v in row if v != PAD_INDEX] for row in feats]
-    pred = net.prob(feat_lists, sides.tolist())
+    pred_cp = net.cp(feat_lists, sides.tolist()).astype(np.float64)
 
-    corr = float(np.corrcoef(pred, target)[0, 1])
-    mae = float(np.mean(np.abs(pred - target)))
-    rmse = float(np.sqrt(np.mean((pred - target) ** 2)))
+    mae = float(np.mean(np.abs(pred_cp - cps)))
+    rmse = float(np.sqrt(np.mean((pred_cp - cps) ** 2)))
+    m_bal = np.abs(cps) < 100
 
     print()
     print('整体指标（%d 个抽样局面）' % n)
-    print('  与引擎评分的相关系数 : %.4f   （越接近 1 越好，0.8 以上说明学得不错）' % corr)
-    print('  平均绝对偏差         : %.4f   （胜率尺度，0.05 约等于 5 个百分点）' % mae)
-    print('  均方根偏差           : %.4f' % rmse)
+    print('  整体相关系数         : %.4f' % corr(pred_cp, cps))
+    print('  均势档相关系数       : %.4f   （|cp|<100，%d 个局面 —— 这一项才是关键）'
+          % (corr(pred_cp[m_bal], cps[m_bal]), int(m_bal.sum())))
+    print('  平均绝对偏差         : %.1f 分   （一个兵约 100 分）' % mae)
+    print('  均势档平均绝对偏差   : %.1f 分'
+          % float(np.mean(np.abs(pred_cp[m_bal] - cps[m_bal]))))
+    print('  均方根偏差           : %.1f 分' % rmse)
 
     print()
     print('分档表现')
-    print('  %-18s %8s %10s %10s' % ('局面类型', '样本数', '相关系数', '平均偏差'))
+    print('  %-20s %8s %10s %10s' % ('局面类型', '样本数', '相关系数', '平均偏差'))
     bands = [
         (0, 50, '均势 |cp|<50'),
         (50, 200, '稍优 50~200'),
@@ -96,40 +114,29 @@ def main():
         m = (np.abs(cps) >= lo) & (np.abs(cps) < hi)
         k = int(m.sum())
         if k < 10:
-            print('  %-18s %8d %10s %10s' % (name, k, '-', '-'))
+            print('  %-20s %8d %10s %10s' % (name, k, '-', '-'))
             continue
-        c = float(np.corrcoef(pred[m], target[m])[0, 1]) if pred[m].std() > 0 else float('nan')
-        e = float(np.mean(np.abs(pred[m] - target[m])))
-        print('  %-18s %8d %10.4f %10.4f' % (name, k, c, e))
-
-    # 评估分转回 cp，看引擎侧用起来偏差多大
-    p = np.clip(pred.astype(np.float64), 1e-6, 1 - 1e-6)
-    pred_cp = CP_SCALE * np.log(p / (1 - p))
-    cap = np.abs(cps) < 2000
-    cp_mae = float(np.mean(np.abs(pred_cp[cap] - cps[cap])))
-    print()
-    print('  换算成引擎分值：平均偏差 %.1f 分（只统计 |引擎分|<2000 的局面）' % cp_mae)
-    print('  （作为参考：一个兵约 100 分，所以这个偏差大致是 %.1f 个兵的量级）' % (cp_mae / 100))
+        print('  %-20s %8d %10.4f %10.1f'
+              % (name, k, corr(pred_cp[m], cps[m]),
+                 float(np.mean(np.abs(pred_cp[m] - cps[m])))))
 
     if args.show > 0:
         print()
         print('抽样对照（引擎分与网络预测）')
         picks = rng.choice(n, size=min(args.show, n), replace=False)
         for k, j in enumerate(picks, 1):
-            src = int(idxs[j])
             print()
             print('  ── 样本 %d ──  走子方：%s' %
                   (k, '红' if sides[j] == 0 else '黑'))
             print(render(boards[j]))
-            tgt = float(target[j])
-            print('     引擎：%+6d 分  →  胜率 %.3f' % (cps[j], tgt))
-            print('     网络：%+6.0f 分  →  胜率 %.3f   （偏差 %+.3f）'
-                  % (pred_cp[j], pred[j], pred[j] - tgt))
+            print('     引擎：%+6d 分    网络：%+6.0f 分   （偏差 %+.0f 分）'
+                  % (cps[j], pred_cp[j], pred_cp[j] - cps[j]))
 
     print()
     print('=' * 64)
     print('说明：网络是对 Pikafish 评估的近似，相关系数高说明它学到了引擎的判断。')
     print('      但它只是个评估函数，还需要接到拥有完整规则的搜索引擎里才能下棋。')
+    print('      要判断它能不能挑对棋，跑 tests/eval_net_strength.py。')
     print('=' * 64)
 
 

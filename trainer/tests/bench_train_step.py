@@ -2,15 +2,17 @@
 训练单步的性能拆解与显存估算。
 
 用途有两个：
-  1. 复现 README 里那张「CPU 侧 35% / GPU 侧 65%」的表
+  1. 复现 README 里那张「CPU 侧 / 加速器侧」占比表
   2. 换机器之后自己跑一遍，看瓶颈到底在哪、显存够不够
 
-结论先写在前面：这个网络只有 32 万参数，显存从来不是约束，
-吞吐主要取决于 CPU 侧的特征编码。所以换一张更强的显卡，
+结论先写在前面：这个网络只有几十万参数（512/64 是 68 万），显存从来不是
+约束，吞吐主要取决于 CPU 侧的特征编码。所以换一张更强的显卡，
 训练时间不会有明显变化。
 
     python tests/bench_train_step.py
+    python tests/bench_train_step.py --l1 256 --l2 32    # 复现 v1 的结构
 """
+import argparse
 import os
 import sys
 import time
@@ -22,8 +24,8 @@ import numpy as np                                              # noqa: E402
 import torch                                                    # noqa: E402
 
 from gen_data import REC_DTYPE                                  # noqa: E402
-from model import XQNet                                         # noqa: E402
-from train import compute_features                              # noqa: E402
+from model import XQNet, huber_loss                             # noqa: E402
+from train import compute_features, make_target                 # noqa: E402
 
 BATCH = 8192
 ROUNDS = 20
@@ -57,20 +59,32 @@ def bench(name, fn, rounds=ROUNDS):
     return dt, out
 
 
+def parse_args(argv=None):
+    ap = argparse.ArgumentParser(description='拆解训练单步的耗时')
+    ap.add_argument('--l1', type=int, default=512)
+    ap.add_argument('--l2', type=int, default=64)
+    ap.add_argument('--device', default='cpu',
+                    help='默认 cpu：这里要拆的是相对占比，用 CPU 计时更稳')
+    return ap.parse_args(argv)
+
+
 def main():
+    args = parse_args()
     data, rng = make_fake_data()
     idxs = rng.permutation(len(data))[:BATCH]
 
     print('=' * 66)
-    print('训练单步拆解（batch = %d，用 CPU 计时看相对占比）' % BATCH)
+    print('训练单步拆解（batch = %d，网络 %d/%d，设备 %s）'
+          % (BATCH, args.l1, args.l2, args.device))
     print('=' * 66)
     print()
     print('  %-36s %9s %8s' % ('环节', 'ms/batch', '占比'))
 
     timings = {}
 
-    dev = torch.device('cpu')
-    net = XQNet().to(dev)
+    dev = torch.device(args.device)
+    net = XQNet(l1=args.l1, l2=args.l2).to(dev)
+    n_param = sum(p.numel() for p in net.parameters())
     opt = torch.optim.Adam(net.parameters(), lr=1e-3)
 
     def raw_rows():
@@ -90,23 +104,22 @@ def main():
     timings['3 特征编码'] = t
 
     def target():
-        return 1.0 / (1.0 + np.exp(-np.clip(cps.astype(np.float32),
-                                            -30000, 30000) / 600))
+        return make_target(cps, 'value')
 
-    t, _ = bench('4  cp 换算成目标值', target)
+    t, tgt_np = bench('4  cp 换算成目标值（线性分值）', target)
     timings['4 目标值'] = t
 
     def to_tensor():
         return (torch.from_numpy(feats),
                 torch.from_numpy(sides.astype(np.int64)),
-                torch.from_numpy(target().astype(np.float32)))
+                torch.from_numpy(tgt_np.astype(np.float32)))
 
     t, (idx_t, side_t, tgt_t) = bench('5  numpy 转 torch 张量', to_tensor)
     timings['5 转张量'] = t
 
     def fwd_bwd():
         opt.zero_grad(set_to_none=True)
-        loss = torch.nn.functional.mse_loss(net(idx_t, side_t), tgt_t)
+        loss = huber_loss(net(idx_t, side_t), tgt_t)
         loss.backward()
         return loss
 
@@ -126,7 +139,7 @@ def main():
     print('  %-36s %9.2f %7.1f%%' % ('合计', total * 1000, 100.0))
     print()
     cpu_side = sum(v for k, v in timings.items() if not k.startswith('6'))
-    print('  CPU 侧: %6.2f ms (%2.0f%%)    GPU 侧: %6.2f ms (%2.0f%%)'
+    print('  CPU 侧: %6.2f ms (%2.0f%%)    网络前向反向: %6.2f ms (%2.0f%%)'
           % (cpu_side * 1000, 100 * cpu_side / total,
              timings['6 前向反向'] * 1000,
              100 * timings['6 前向反向'] / total))
@@ -138,10 +151,10 @@ def main():
     print('=' * 66)
     pieces = [
         ('特征索引 (B,32) int64', feats.nbytes),
-        # acc 和 h1 是两个独立的 (B,256) 张量，别只算一个
-        ('累加器 acc (B,256) f32', BATCH * 256 * 4),
-        ('激活 h1 (B,256) f32', BATCH * 256 * 4),
-        ('h2 (B,32) f32', BATCH * 32 * 4),
+        # acc 和 h1 是两个独立的 (B,l1) 张量，别只算一个
+        ('累加器 acc (B,%d) f32' % args.l1, BATCH * args.l1 * 4),
+        ('激活 h1 (B,%d) f32' % args.l1, BATCH * args.l1 * 4),
+        ('h2 (B,%d) f32' % args.l2, BATCH * args.l2 * 4),
         ('输出 (B,1) f32', BATCH * 4),
     ]
     single = 0
@@ -157,6 +170,7 @@ def main():
     for gb in (8, 11, 12, 24):
         print('  %2d GB 显存 -> 裕度约 %5.1f 倍' % (gb, gb * 1024 / need_mb))
     print()
+    print('  网络参数：%d 个' % n_param)
     print('  结论：显存不是约束。想省时间应该减少 CPU 侧的特征计算，')
     print('        或者用更大的 batch 摊薄每批的固定开销 —— 而不是换显卡。')
     return 0

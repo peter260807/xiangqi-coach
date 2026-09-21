@@ -45,6 +45,51 @@ from uci import EngineError, UciEngine       # noqa: E402
 REC_DTYPE = np.dtype([('board', 'S90'), ('cp', '<i2'), ('side', 'u1')])
 REC_SIZE = REC_DTYPE.itemsize
 
+# 记录内部各字段的字节偏移。写成常量并做断言校验，字段顺序一旦被改动
+# 会立刻炸出来，而不是安静地算出一个错的哈希。
+_OFF_BOARD = 0
+_OFF_CP = 90
+_OFF_SIDE = 92
+_HASH_CHUNK = 4_000_000
+
+
+def position_hashes(data):
+    """
+    给每条记录算一个基于 (棋盘, 走子方) 的 64 位哈希。
+
+    放在这个模块里而不是 train.py，是因为它只依赖 numpy 和记录布局：
+    和 REC_DTYPE 待在一起能保证字节偏移不会跟记录格式脱节，
+    也避免「只想统计一下数据集」的人被 torch 依赖挡住。
+
+    刻意**不含 cp**：同一个局面分值应当一致，但去重和划分要按「局面」做，
+    把分值混进来会让本该认出来的重复漏掉。
+
+    实现上不逐字节哈希，而是把 91 个字节补到 96 字节后按 8 字节一组
+    折叠 —— 同样的结果，少一个数量级的循环。分块处理避免一次性
+    分配几 GB 的临时缓冲。
+    """
+    n = len(data)
+    raw = np.ascontiguousarray(data).view(np.uint8).reshape(n, REC_SIZE)
+
+    assert REC_SIZE == 93, '记录长度变了（%d），请同步下面的偏移常量' % REC_SIZE
+    assert int(raw[0, _OFF_SIDE]) == int(data['side'][0]), \
+        'side 字段的字节偏移不是 %d，字段顺序被改动过' % _OFF_SIDE
+
+    h = np.zeros(n, dtype=np.uint64)
+    for s in range(0, n, _HASH_CHUNK):
+        e = min(s + _HASH_CHUNK, n)
+        m = e - s
+        buf = np.zeros((m, 96), dtype=np.uint8)
+        buf[:, :90] = raw[s:e, _OFF_BOARD:_OFF_BOARD + 90]
+        buf[:, 90] = raw[s:e, _OFF_SIDE]
+        u = buf.view(np.uint64).reshape(m, 12)
+        hh = u[:, 0].copy()
+        for k in range(1, 12):
+            hh = hh * np.uint64(1000003) + u[:, k]
+        h[s:e] = hh
+    return h
+
+
 # 训练包根目录（src 的上一层），引擎固定放在它下面的 engine/
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENGINE_DIR = os.path.join(ROOT, 'engine')
@@ -303,8 +348,10 @@ def parse_args(argv=None):
                     help='每个引擎实例的置换表大小 MB')
     ap.add_argument('--max-plies', type=int, default=220,
                     help='单局最多走多少手')
-    ap.add_argument('--opening-plies', type=int, default=6,
-                    help='开局随机步数上限（0 表示关闭随机，全部走最优着法）')
+    ap.add_argument('--opening-plies', type=int, default=12,
+                    help='开局随机步数上限（0 表示关闭随机，全部走最优着法）。'
+                         '默认 12 是实测调上去的：原来只给 6，平均才 3 手随机，'
+                         '后续着法完全由引擎决定，生成的两千万条里重复率高达 63%%')
     ap.add_argument('--minutes', type=float, default=180,
                     help='每个 worker 运行多少分钟')
     ap.add_argument('--records', type=int, default=0,

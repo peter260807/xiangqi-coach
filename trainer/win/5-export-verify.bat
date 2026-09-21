@@ -28,7 +28,7 @@ echo ----------------------------------------------------------------
 echo  Exporting to engine-loadable format
 echo ----------------------------------------------------------------
 echo.
-python src\export.py --weights logs\weights.pt --out logs\xq-v1.xqnn
+python src\export.py --weights logs\weights.pt --out logs\xq-v2.xqnn
 if errorlevel 1 goto EXPORTFAIL
 
 echo.
@@ -36,7 +36,7 @@ echo ----------------------------------------------------------------
 echo  Verifying quality
 echo ----------------------------------------------------------------
 echo.
-python src\verify.py --data data --net logs\xq-v1.xqnn --samples 4000 --show 3
+python src\verify.py --data data --net logs\xq-v2.xqnn --samples 4000 --show 3
 
 echo.
 echo ================================================================
@@ -44,12 +44,12 @@ echo  Done
 echo ================================================================
 echo.
 echo Output files:
-echo   logs\xq-v1.xqnn   final network (this is what the engine loads)
+echo   logs\xq-v2.xqnn   final network (this is what the engine loads)
 echo   logs\weights.pt   training weights (keep for further training)
 echo   logs\train.log    training log
 echo   data\part_*.bin   training data (safe to delete after training)
 echo.
-echo Send back logs\xq-v1.xqnn plus the verification output above.
+echo Send back logs\xq-v2.xqnn plus the verification output above.
 echo.
 pause
 exit /b 0

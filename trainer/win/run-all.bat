@@ -60,9 +60,9 @@ echo.
 echo ================================================================
 echo  [3/3] Export + verify   started at %TIME%
 echo ================================================================
-python src\export.py --weights logs\weights.pt --out logs\xq-v1.xqnn
+python src\export.py --weights logs\weights.pt --out logs\xq-v2.xqnn
 if errorlevel 1 goto FAIL
-python src\verify.py --data data --net logs\xq-v1.xqnn --samples 4000 --show 3
+python src\verify.py --data data --net logs\xq-v2.xqnn --samples 4000 --show 3
 if errorlevel 1 goto FAIL
 
 echo.
@@ -72,7 +72,7 @@ echo ================================================================
 echo.
 echo Finished at %TIME%
 echo.
-echo Output: logs\xq-v1.xqnn
+echo Output: logs\xq-v2.xqnn
 echo Send back that file plus the verification output above.
 echo.
 pause

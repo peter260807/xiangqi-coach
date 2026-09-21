@@ -5,7 +5,7 @@
 这个脚本直接测后者：
 
   给一个局面，让 Pikafish 用 MultiPV 排出 N 个候选着法（引擎已排好序），
-  再让网络按「走完之后对手胜率最低」来排序，看网络挑中的那一步
+  再让网络按「走完之后对手分值最低」来排序，看网络挑中的那一步
   在引擎的排序里排第几。
 
 ⚠️ 但只有这个数字会误导人 —— 网络只做静态评估，而基准是 N 层搜索，
@@ -101,9 +101,9 @@ def judge(engine, net, positions, multipv, depth, verbose):
             xq.apply_move(after, c['pv'])
             feats.append(xq.feature_indices(after, opp))
             sides.append(opp_side)
-        # 网络给的是「走完之后轮到对手时」的对手胜率，
-        # 换算成我方胜率才能和引擎分值同向比较
-        our = 1.0 - net.prob(feats, sides)
+        # 网络给的是「走完之后轮到对手时」的**对手分值**，
+        # 取负才是我方视角，与引擎分值同向
+        our = -net.cp(feats, sides)
         rank = int(np.argmax(our))
         ranks.append(rank)
 
@@ -200,8 +200,13 @@ def main():
     print()
 
     net = NumpyNet(args.net)
-    print('  网络结构：%d -> %d -> %d -> 1'
-          % (net.feat_dim, net.l1, net.l2))
+    if net.legacy_winrate:
+        # v1 文件的 output_scale 字段是保留位（恒为 0），别拿它当刻度打印
+        print('  网络结构：%d -> %d -> %d -> 1，v1 格式（输出是走子方胜率）'
+              % (net.feat_dim, net.l1, net.l2))
+    else:
+        print('  网络结构：%d -> %d -> %d -> 1，输出 1.0 = %.0f 分'
+              % (net.feat_dim, net.l1, net.l2, net.output_scale))
 
     positions = sample_positions(args.data, args.positions, args.seed)
 
