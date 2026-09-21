@@ -126,6 +126,21 @@ def check_torch():
             line(OK, 'CUDA 可用：%s' % name,
                  '计算能力 sm_%d%d，显存 %.1f GB，CUDA %s'
                  % (cap[0], cap[1], mem, torch.version.cuda))
+
+            # batch=8192 的实测显存需求：特征索引 2 MB + 激活约 19 MB +
+            # 反向还要存两倍 + PyTorch 运行时约 300 MB ≈ 0.36 GB。
+            # 这个网络只有 32 万参数，显存基本不构成约束 —— 直接把结论
+            # 打出来，省得用户以为 8G 的卡需要调小 batch。
+            need = 0.4
+            if mem >= need * 2:
+                line(OK, '显存够用，batch 不用调',
+                     '默认 batch 8192 实测约占 %.1f GB（大头是 PyTorch 运行时\n'
+                     '本身，模型只有 32 万参数），这里有约 %.0f 倍裕度。\n'
+                     '调大也行，但收益很小 —— 瓶颈在 CPU 侧的特征编码。'
+                     % (need, mem / need))
+            else:
+                line(WARN, '显存偏小（%.1f GB）' % mem,
+                     '建议把 win/4-train.bat 里的 BATCH 从 8192 改成 4096。')
         except Exception as e:
             line(WARN, 'CUDA 报告可用但读取设备信息失败: %s' % e)
             return 'cuda'
@@ -273,10 +288,55 @@ def check_disk():
 def check_cpu():
     n = os.cpu_count() or 0
     if n >= 8:
-        line(OK, 'CPU %d 个逻辑核心' % n, '数据生成阶段建议用 %d 个并行进程' % max(1, n - 2))
+        line(OK, 'CPU %d 个逻辑核心' % n,
+             '数据生成阶段建议用 %d 个并行进程（bat 里的 WORKERS）\n'
+             '注意：数据生成这一步只吃 CPU，换显卡对它的速度没有影响。'
+             % max(1, n - 2))
     else:
         line(WARN, 'CPU 只有 %d 个逻辑核心' % n,
              '数据生成会偏慢，建议把 --workers 调小并延长运行时间。')
+
+
+def check_ram():
+    """训练时整个数据集会读进内存，内存不够会非常难受。
+    另外这里要提醒一句：拼接分片时峰值约为数据量的两倍。"""
+    total = None
+    try:
+        if hasattr(os, 'sysconf') and 'SC_PHYS_PAGES' in os.sysconf_names:
+            total = os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
+        else:
+            import ctypes
+
+            class _MemStatus(ctypes.Structure):
+                _fields_ = [('dwLength', ctypes.c_ulong),
+                            ('dwMemoryLoad', ctypes.c_ulong),
+                            ('ullTotalPhys', ctypes.c_ulonglong),
+                            ('ullAvailPhys', ctypes.c_ulonglong),
+                            ('ullTotalPageFile', ctypes.c_ulonglong),
+                            ('ullAvailPageFile', ctypes.c_ulonglong),
+                            ('ullTotalVirtual', ctypes.c_ulonglong),
+                            ('ullAvailVirtual', ctypes.c_ulonglong),
+                            ('ullAvailExtendedVirtual', ctypes.c_ulonglong)]
+            ms = _MemStatus()
+            ms.dwLength = ctypes.sizeof(_MemStatus)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms)):
+                total = ms.ullTotalPhys
+    except Exception:
+        total = None
+
+    if not total:
+        line(WARN, '内存大小读不出来', '跳过这一项，不影响后续步骤。')
+        return
+
+    gb = total / 1024 ** 3
+    if gb >= 24:
+        line(OK, '内存 %.0f GB' % gb,
+             '够用。数据集是全量读进内存的（1 亿局面约 9.3 GB），\n'
+             '拼接分片时峰值会翻倍，所以 24 GB 以上比较稳妥。')
+    else:
+        line(WARN, '内存只有 %.0f GB' % gb,
+             '数据集是全量载入内存的，1 亿局面约 9.3 GB、拼接时峰值翻倍。\n'
+             '建议把数据量控制在 5000 万局面以内，或调小 --minutes。')
 
 
 def main():
@@ -294,6 +354,7 @@ def main():
     check_numpy()
     device = check_torch()
     check_cpu()
+    check_ram()
     check_disk()
 
     print()
@@ -308,10 +369,13 @@ def main():
         print('全部就绪，可以开始跑了。')
         print()
         print('建议流程（Windows）：')
-        print('  1-install.bat      安装依赖')
-        print('  2-gen-data.bat     生成训练数据（可挂机跑几小时）')
-        print('  3-train.bat        训练网络')
-        print('  4-export.bat       导出并验证')
+        print('  1-install.bat        安装依赖')
+        print('  2-selfcheck.bat      环境自检')
+        print('  3-gen-data.bat       生成训练数据（可挂机跑几小时）')
+        print('  4-train.bat          训练网络')
+        print('  5-export-verify.bat  导出并验证效果')
+        print()
+        print('  或者直接跑 run-all.bat 一次做完前五项')
     else:
         print('发现 %d 个问题：' % len(problems))
         for p in problems:
