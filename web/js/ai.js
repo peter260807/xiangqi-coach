@@ -325,22 +325,34 @@
     ];
   }
 
-  function pickMoveMessages(ctx) {
+  /* 混合对弈用：着法由引擎定，这里只让模型解释「为什么走这一步」。
+     为什么不再让模型挑：候选和评分本来就是引擎算出来的，模型「挑」并不更懂，
+     反而可能因为理由好听而选次优着法；而且 JSON 输出遇到思维链吃满 token 会
+     解析失败、静默回退（实测就踩到了）。改成纯文本解释之后，
+     输出更短、失败风险归零，理由也必然和实际走的棋一致。 */
+  function explainMoveMessages(ctx) {
     var lines = [];
     lines.push('\u3010\u5c40\u9762\u3011');
     lines.push(boardAscii(ctx.board));
     lines.push('');
     lines.push('\u4f60\u6267' + (ctx.side === 'r' ? '\u7ea2' : '\u9ed1') + '\u65b9\u3002');
     lines.push('');
-    lines.push('\u3010\u53ef\u9009\u7740\u6cd5\u3011\u4e0b\u9762\u662f\u5f15\u64ce\u7b97\u51fa\u7684\u5408\u6cd5\u7740\u6cd5\uff0c\u4f60\u53ea\u80fd\u4ece\u4e2d\u9009\u4e00\u4e2a\uff1a');
-    ctx.candidates.forEach(function (c, i) {
-      lines.push('  ' + (i + 1) + '. ' + c.label + '\uff08\u5f15\u64ce\u8bc4\u4f30 ' + c.score + '\uff09');
-    });
+    lines.push('\u3010\u51b3\u5b9a\u8d70\u7684\u8fd9\u4e00\u6b65\u3011' +
+      ctx.move + '\uff08\u5f15\u64ce\u8bc4\u4f30 ' + ctx.score + '\uff09');
+    if (ctx.alternatives && ctx.alternatives.length) {
+      lines.push('');
+      lines.push('\u3010\u5f15\u64ce\u4e5f\u8003\u8651\u8fc7\u4f46\u6ca1\u9009\u7684\u3011');
+      ctx.alternatives.forEach(function (c) {
+        lines.push('  ' + c.label + '\uff08\u5f15\u64ce\u8bc4\u4f30 ' + c.score + '\uff09');
+      });
+    }
     lines.push('');
-    lines.push('\u3010\u8f93\u51fa\u683c\u5f0f\u3011\u4e25\u683c\u53ea\u8f93\u51fa\u4e00\u884c JSON\uff0c\u4e0d\u8981\u4efb\u4f55\u5176\u4ed6\u5185\u5bb9\uff1a');
-    lines.push('{"move":"\u8fd9\u91cc\u586b\u7740\u6cd5\u540d\u79f0\uff0c\u5fc5\u987b\u4e0e\u4e0a\u9762\u5217\u8868\u5b8c\u5168\u4e00\u81f4","reason":"\u4e00\u53e5\u8bdd\u7406\u7531\uff0c\u4e0d\u8d85\u8fc7 40 \u5b57"}');
+    lines.push('\u3010\u4efb\u52a1\u3011\u7528\u4e24\u4e09\u53e5\u8bdd\u8bf4\u6e05\u695a\uff1a' +
+      '\u4e3a\u4ec0\u4e48\u8981\u8d70\u8fd9\u4e00\u6b65\u3001\u5b83\u89e3\u51b3\u4e86\u4ec0\u4e48\u95ee\u9898\uff0c' +
+      '\u4ee5\u53ca\u4e3a\u4ec0\u4e48\u4e0d\u9009\u5176\u4ed6\u90a3\u4e9b\u3002' +
+      '\u4e0d\u8981\u8d85\u8fc7 100 \u5b57\u3002\u4e0d\u8981\u8f93\u51fa JSON\u3002');
     return [
-      { role: 'system', content: '\u4f60\u662f\u4e00\u4f4d\u4e2d\u56fd\u8c61\u68cb\u9ad8\u624b\uff0c\u73b0\u5728\u6b63\u5728\u5bf9\u5c40\u4e2d\u3002\u53ea\u8f93\u51fa JSON\u3002' },
+      { role: 'system', content: SYSTEM_COACH },
       { role: 'user', content: lines.join('\n') }
     ];
   }
@@ -371,7 +383,7 @@
     positionBrief: positionBrief,
     coachMessages: coachMessages,
     reviewMessages: reviewMessages,
-    pickMoveMessages: pickMoveMessages,
+    explainMoveMessages: explainMoveMessages,
     extractJson: extractJson,
     SYSTEM_COACH: SYSTEM_COACH
   };

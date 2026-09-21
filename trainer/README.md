@@ -41,6 +41,7 @@
 |---|---|---|
 | `win\1-install.bat` | 装 numpy 和 PyTorch（含 CUDA） | 5~15 分钟（看网速） |
 | `win\2-selfcheck.bat` | 环境自检，确认引擎能跑 | 10 秒 |
+| `win\0-fix-torch.bat` | **只在 PyTorch 装不上时用**：自动诊断并修复 c10.dll 报错 | 5~10 分钟 |
 | `win\3-gen-data.bat` | 生成训练数据 | **2~4 小时** |
 | `win\4-train.bat` | 训练网络 | **1~3 小时** |
 | `win\5-export-verify.bat` | 导出 + 验证效果 | 1~2 分钟 |
@@ -176,6 +177,21 @@ cp     = 400 * ln(prob / (1 - prob))                 // 换算成引擎惯用的
 多半是 exe 和 nnue 版本不匹配。用同一个发布包里的这两个文件，
 别把不同版本混着用。可以在命令行手动跑一次 exe，它会打印具体原因。
 
+**Q：`torch\lib\c10.dll` 初始化失败（WinError 1114）**
+
+这是 Windows 上最常见的 PyTorch 问题。按可能性从高到低：
+
+1. **PyTorch 2.9.x 本身有这个 bug** —— 多人反馈回退到 2.8.0 就好了。
+   `1-install.bat` 已经锁定 2.8.0；如果你之前手动装过别的版本，
+   跑一次 `0-fix-torch.bat` 会自动处理。
+2. **缺少 Visual C++ 运行库** —— 下载安装（注意要 x64 那个）：
+   https://aka.ms/vs/17/release/vc_redist.x64.exe
+   装完**重启电脑**再试。
+3. **装了 CUDA 版但机器环境不匹配** —— 可以先装 CPU 版把整个流程跑通，
+   确认脚本没问题了再换 CUDA 版。
+
+`0-fix-torch.bat` 会按这个顺序自动排查一遍，不用手工折腾。
+
 **Q：自检显示 CUDA 不可用**
 说明装成了 CPU 版 PyTorch。重装 CUDA 版：
 ```
@@ -206,6 +222,7 @@ trainer\
 ├── README.md              本文件
 ├── engine\                放 Pikafish 的 exe 和 nnue（需要你手动放）
 ├── win\                   Windows 一键脚本
+│   ├── 0-fix-torch.bat
 │   ├── 1-install.bat
 │   ├── 2-selfcheck.bat
 │   ├── 3-gen-data.bat

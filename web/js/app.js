@@ -445,43 +445,58 @@
     }, 30);
   }
 
+  /* 混合对弈：着法由引擎定（棋力有保证），模型只负责解释为什么这么走。
+     两个刻意的取舍：
+       1. 先走子、再要解释 —— 不能让整局卡在模型那几十秒上。
+          用的是走子前的局面快照，所以解释和实际走的棋必然对得上。
+       2. 不需要 JSON —— 纯文本输出，既缩短了输出、也把解析失败的风险去掉了。 */
   function hybridTurn() {
     var cands = XQ.topMoves(board, 'b', 5, 5, 2500);
     if (!cands.length) { thinking = false; onMoveSettled(); return; }
-    showPanel('大模型选着', '引擎已算出 ' + cands.length + ' 个合法候选，正在请模型选择…');
 
-    XQAI.chat(XQAI.pickMoveMessages({ board: board, side: 'b', candidates: cands }), {
-      // 实测：这个任务的思维链要 5000+ token。原来设 2500，正文会被思维链挤没
-      // （实测输出 5001 token 全是思维链、正文 0 字），JSON 自然解析不出来，
-      // 于是一直静默回退到引擎首选 —— 也就是"混合对弈"这个功能其实没生效过。
-      // max_tokens 只是上限、并不按它计费，所以给足即可，不会增加成本。
-      maxTokens: 10000, temperature: 0.3,
-      onRetry: function (n, tokens) { panelBody.textContent = '输出被思维链占满，正在加大预算重试（' + tokens + ' token）…'; },
-      onReasoning: function (d, all) { panelTitle.textContent = '大模型选着（思考中 ' + all.length + ' 字）'; },
+    var chosen = cands[0];
+    var snapshot = XQ.cloneBoard(board);   // 走子前的局面，留着给模型看
+    var plyBefore = history.length;
+
+    showPanel('大模型讲解', '引擎已定下 ' + chosen.label + '，正在请模型讲讲为什么…');
+
+    // 先落子，对局不等模型
+    thinking = false;
+    playMove(chosen.move, {});
+
+    XQAI.chat(XQAI.explainMoveMessages({
+      board: snapshot, side: 'b',
+      move: chosen.label, score: chosen.score,
+      alternatives: cands.slice(1, 4)
+    }), {
+      // 推理模型的思维链会吃掉大量 token，预算给足；
+      // max_tokens 只是上限、不按它计费，所以调大不增加成本。
+      maxTokens: 10000, temperature: 0.5,
+      onRetry: function (n, tokens) {
+        panelBody.textContent = '输出被思维链占满，正在加大预算重试（' + tokens + ' token）…';
+      },
+      onReasoning: function (d, all) {
+        panelTitle.textContent = '大模型讲解（思考中 ' + all.length + ' 字）';
+      },
       onDelta: function (d, all) { panelBody.textContent = all; }
     }).then(function (r) {
-      var obj = XQAI.extractJson(r.content);
-      var mv = obj ? XQ.findMoveByLabel(board, 'b', obj.move) : null;
-      var fallback = !mv;
-      var used = fallback ? cands[0].label : obj.move;
-      if (fallback) mv = cands[0].move;
-
-      var body = '引擎候选：' + cands.map(function (c) { return c.label + '(' + c.score + ')'; }).join('  ') + '\n\n';
-      body += '模型选择：' + used + (fallback ? '（模型给的着法无法识别，已回退到引擎首选）' : '');
-      if (obj && obj.reason) body += '\n理由：' + obj.reason;
-      body += '\n\n引擎推荐：' + cands[0].label + '（评估 ' + cands[0].score + '）';
-      panelTitle.textContent = '大模型选着';
-      panelBody.textContent = body;
-
-      thinking = false;
-      playMove(mv, {});
+      var text = (r.content || '').trim();
+      var tail = '\n\n—— 着法由引擎给出：' + chosen.label + '（评估 ' + chosen.score + '）';
+      if (!text) {
+        panelTitle.textContent = '大模型讲解（无正文）';
+        panelBody.textContent = '模型这次没给出正文（输出被思维链占满）。' + tail;
+        panelBody.className = 'panel-body err';
+        return;
+      }
+      // 如果这期间又走了一步，就别再把旧局面的解释盖上去
+      if (history.length !== plyBefore + 1) return;
+      panelTitle.textContent = '大模型讲解';
+      panelBody.textContent = text + tail;
     }).catch(function (e) {
-      panelTitle.textContent = '大模型选着（已回退）';
-      panelBody.textContent = '调用失败：' + e.message + '\n\n已自动改用本地引擎走子。';
-      var res = XQ.pickMove(board, 'b', selLevel.value);
-      thinking = false;
-      if (res.move) playMove(res.move, {});
-      else onMoveSettled();
+      panelTitle.textContent = '大模型讲解（失败）';
+      panelBody.textContent = '模型解释失败：' + e.message +
+        '\n\n—— 着法由引擎给出：' + chosen.label + '（评估 ' + chosen.score + '）';
+      panelBody.className = 'panel-body err';
     });
   }
 

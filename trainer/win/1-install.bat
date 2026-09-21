@@ -23,7 +23,9 @@ python -m pip install --upgrade pip --quiet
 echo [2/3] 安装 numpy ...
 python -m pip install numpy --quiet
 echo [3/3] 安装 PyTorch（带 CUDA，下载量较大请耐心等待）...
-python -m pip install torch --quiet
+echo       注意锁定了 2.8.0 版本 —— 2.9.x 在 Windows 上有已知的
+echo       c10.dll 初始化失败问题，很多人反馈回退到 2.8.0 就好了。
+python -m pip install "torch==2.8.0" --quiet
 
 echo.
 echo ----------------------------------------------------------------
