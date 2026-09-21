@@ -49,9 +49,9 @@
 
 | 脚本 | 做什么 | 大致耗时 |
 |---|---|---|
-| `win\1-install.bat` | 装 numpy 和 PyTorch（含 CUDA） | 5~15 分钟（看网速） |
-| `win\2-selfcheck.bat` | 环境自检，确认引擎能跑 | 10 秒 |
-| `win\0-fix-torch.bat` | **只在 PyTorch 装不上时用**：自动诊断并修复 c10.dll 报错 | 5~10 分钟 |
+| `win\1-install.bat` | 装 numpy 和 PyTorch **CUDA 版**（约 2.5 GB，走 PyTorch 官方索引） | 10~30 分钟（看网速） |
+| `win\2-selfcheck.bat` | 环境自检，确认引擎和显卡都能用 | 10 秒 |
+| `win\0-fix-torch.bat` | **只在 PyTorch 有问题时用**：自动区分「装错包 / 驱动太旧 / c10.dll 报错」并修复 | 5~15 分钟 |
 | `win\3-gen-data.bat` | 生成训练数据 | **2~4 小时** |
 | `win\4-train.bat` | 训练网络 | **1~3 小时** |
 | `win\5-export-verify.bat` | 导出 + 验证效果 | 1~2 分钟 |
@@ -202,13 +202,32 @@ cp     = 400 * ln(prob / (1 - prob))                 // 换算成引擎惯用的
 
 `0-fix-torch.bat` 会按这个顺序自动排查一遍，不用手工折腾。
 
-**Q：自检显示 CUDA 不可用**
-说明装成了 CPU 版 PyTorch。重装 CUDA 版：
+**Q：自检说装的是 CPU 版 PyTorch / CUDA 不可用** ⚠️ 最容易踩的坑
+
+**PyPI 上 Windows 的 torch 轮子是纯 CPU 版**（230 MB；同版本 Linux 轮子 847 MB
+才含 CUDA）。所以 `pip install torch` 会**安装成功、看起来一切正常，但显卡永远用不上**，
+`torch.cuda.is_available()` 一直是 `False`——不报错，只是慢。
+
+必须指定 PyTorch 自己的索引：
+
 ```
-pip uninstall torch -y
-pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip uninstall -y torch
+pip install "torch==2.8.0" --index-url https://download.pytorch.org/whl/cu126
 ```
-2080Ti 是 sm_75，cu121 完全支持。
+
+⚠️ 那句 `uninstall` 不能省。已装的 CPU 版版本号就是 `2.8.0`，pip 认为
+`torch==2.8.0` 已经满足，**不会重新下载**，你会一直停在 CPU 版上。
+
+怎么判断是哪种情况，看自检输出里的「CUDA 标记」：
+
+| 自检显示 | 含义 | 怎么办 |
+|---|---|---|
+| `CUDA 标记：无` | 装的是 CPU 版，与驱动无关 | 按上面两条命令重装 |
+| `CUDA 标记：12.6` 但仍不可用 | 包对了，**驱动太旧** | `nvidia-smi` 看版本，低于 527 就去 nvidia.com 更新驱动 |
+
+CUDA 版本与驱动的最低要求：`cu126` 要 527+，`cu128` 要 570+，`cu129` 要 575+。
+2080Ti 是 Turing（sm_75），这三个都还支持。想换版本就打开 `win\1-install.bat`
+改 `CUDA_INDEX` 那一行。
 
 **Q：磁盘不够**
 1 亿个局面约占 9.3 GB。跑之前留 30 GB 比较稳妥。
@@ -247,7 +266,10 @@ trainer\
 │   ├── train.py           训练
 │   ├── export.py          导出（含独立复现校验）
 │   ├── verify.py          效果验证
-│   └── selfcheck.py       环境自检
+│   └── selfcheck.py       环境自检（含显卡诊断）
+├── tests\                 打包者的自测脚本，跑训练用不到
+│   ├── test_selfcheck_branches.py   把 Windows 上五种显卡情况都逼出来验证诊断
+│   └── test_bat_args.py             核对 bat 传给 Python 的参数脚本真的支持
 ├── data\                  生成的数据（跑完才出现）
 └── logs\                  训练产出（跑完才出现）
 ```

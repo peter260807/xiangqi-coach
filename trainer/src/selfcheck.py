@@ -40,10 +40,12 @@ def line(mark, title, detail=''):
 def check_python():
     v = sys.version_info
     ver = '%d.%d.%d' % (v.major, v.minor, v.micro)
-    if v.major == 3 and v.minor >= 9:
+    if v.major == 3 and v.minor >= 10:
         line(OK, 'Python 版本 %s' % ver)
         return True
-    line(FAIL, 'Python 版本 %s（需要 3.9 或更高）' % ver)
+    line(FAIL, 'Python 版本 %s（需要 3.10 或更高）' % ver,
+         'PyTorch 2.8.0 没有 Windows 的 3.9 轮子，装不上。\n'
+         '推荐 3.10 ~ 3.13。')
     problems.append('Python 版本过低')
     return False
 
@@ -59,17 +61,62 @@ def check_numpy():
         return False
 
 
+# 正确的安装命令。注意 pip 必须带 --index-url：
+# PyPI 上 Windows 的 torch 轮子只有 230 MB，是纯 CPU 版（同版本 Linux 轮子
+# 847 MB 才含 CUDA）。直接 pip install torch 会成功、但显卡永远用不上。
+CUDA_INDEX = 'https://download.pytorch.org/whl/cu126'
+TORCH_VER = '2.8.0'
+REINSTALL_HINT = (
+    'pip uninstall -y torch\n'
+    'pip install "torch==%s" --index-url %s' % (TORCH_VER, CUDA_INDEX)
+)
+
+
+def nvidia_smi():
+    """机器上到底有没有 N 卡、驱动多新。
+
+    有了这个才能把两种失败区分开：装错了包，还是驱动太旧。
+    两者的处理方式完全不同，猜错会白折腾。
+    """
+    import subprocess
+
+    # nvidia-smi 通常在 System32 里、PATH 里能直接找到，但旧驱动装在
+    # NVIDIA Corporation\NVSMI 下，也可能用户改过 PATH。都试一遍，
+    # 找不到就只能说"不确定"，不能据此断言没有显卡。
+    exe = shutil.which('nvidia-smi')
+    if not exe:
+        for cand in (r'C:\Windows\System32\nvidia-smi.exe',
+                     r'C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe'):
+            if os.path.isfile(cand):
+                exe = cand
+                break
+    if not exe:
+        return None
+
+    try:
+        out = subprocess.run(
+            [exe, '--query-gpu=name,driver_version', '--format=csv,noheader'],
+            capture_output=True, text=True, timeout=20)
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip().splitlines()[0].strip()
+    except Exception:
+        pass
+    return None
+
+
 def check_torch():
     try:
         import torch
     except ImportError:
         line(FAIL, 'PyTorch 未安装',
-             '如果显卡是 N 卡，装 CUDA 版（2080Ti 需要 cu121 或更高）：\n'
-             'pip install torch --index-url https://download.pytorch.org/whl/cu121')
+             '别直接 pip install torch —— PyPI 上 Windows 的轮子是 CPU 版，\n'
+             '装完显卡用不上。必须指定 CUDA 索引：\n' + REINSTALL_HINT)
         problems.append('torch 缺失')
         return None
 
-    line(OK, 'PyTorch %s' % torch.__version__)
+    cuda_tag = getattr(torch.version, 'cuda', None)
+    line(OK, 'PyTorch %s（CUDA 标记：%s）'
+         % (torch.__version__, cuda_tag or '无'))
 
     if torch.cuda.is_available():
         try:
@@ -79,20 +126,63 @@ def check_torch():
             line(OK, 'CUDA 可用：%s' % name,
                  '计算能力 sm_%d%d，显存 %.1f GB，CUDA %s'
                  % (cap[0], cap[1], mem, torch.version.cuda))
-            return 'cuda'
         except Exception as e:
             line(WARN, 'CUDA 报告可用但读取设备信息失败: %s' % e)
             return 'cuda'
+
+        # is_available() 为 True 不等于真能算。如果这个 PyTorch 版本没有为
+        # 这块卡的架构编译 kernel，查到设备信息一切正常，但一运算就抛
+        # "no kernel image is available"。跑一次真实运算才算数。
+        try:
+            x = torch.randn(16, 16, device='cuda')
+            y = torch.randn(16, 16, device='cuda')
+            float((x @ y).sum().item())
+            torch.cuda.synchronize()
+            line(OK, 'CUDA 实际运算通过')
+        except Exception as e:
+            line(FAIL, 'CUDA 报告可用，但实际运算失败',
+                 '%s\n'
+                 '多半是当前 PyTorch 没为这块卡的架构编译 kernel。\n'
+                 '换个 CUDA 版本再试：改 win\\1-install.bat 里的 CUDA_INDEX。'
+                 % e)
+            problems.append('CUDA 无法实际运算')
+            return 'cpu'
+
+        return 'cuda'
 
     # 没 CUDA 也不是走不了，只是慢很多
     if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
         line(WARN, '未检测到 CUDA，将使用 Apple MPS 加速')
         return 'mps'
 
-    line(WARN, '未检测到 CUDA，只能跑 CPU',
-         '训练会慢很多（可能 5~10 倍）。如果机器上有 N 卡，\n'
-         '多半是装成了 CPU 版 torch，重装 CUDA 版即可。')
-    problems.append('没有 GPU 加速')
+    smi = nvidia_smi()
+
+    if cuda_tag is None:
+        # 包本身就不带 CUDA，跟驱动没关系
+        if smi:
+            line(FAIL, '装的是 CPU 版 PyTorch，显卡完全没用上',
+                 '这块卡是有的：%s\n'
+                 '所以不是硬件问题、也不是驱动问题，是包装错了。重装：\n%s'
+                 % (smi, REINSTALL_HINT))
+            problems.append('torch 装成了 CPU 版')
+        else:
+            line(WARN, '装的是 CPU 版 PyTorch',
+                 '没检测到 N 卡，CPU 也能跑，只是慢 5~10 倍。\n'
+                 '如果这台机器其实有 N 卡，那就是驱动还没装。')
+        return 'cpu'
+
+    # 有 CUDA 标记却用不了 —— 这才是驱动问题
+    detail = ('装上的是 CUDA %s 版，但显卡不可用。\n'
+              '最常见原因是 NVIDIA 驱动太旧（cu126 需要 527 以上）。'
+              % cuda_tag)
+    if smi:
+        detail += '\n当前驱动：%s' % smi
+    else:
+        detail += '\n也没找到 nvidia-smi，驱动可能根本没装。'
+    detail += ('\n自己确认一下：在 cmd 里敲 nvidia-smi\n'
+               '驱动太旧就去 nvidia.com 更新，这是最干净的解法。')
+    line(FAIL, 'CUDA 版已安装但显卡用不了', detail)
+    problems.append('CUDA 不可用')
     return 'cpu'
 
 

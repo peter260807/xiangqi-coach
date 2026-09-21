@@ -17,56 +17,155 @@ set PYTHONIOENCODING=utf-8
 set PYTHONUTF8=1
 cd /d "%~dp0.."
 
+rem ===================================================================
+rem  CUDA wheel index - keep in sync with 1-install.bat
+rem ===================================================================
+set CUDA_INDEX=https://download.pytorch.org/whl/cu126
+set TORCH_VER=2.8.0
+rem ===================================================================
+
 echo ================================================================
-echo  Fix PyTorch c10.dll initialization failure
+echo  Fix PyTorch problems on Windows
 echo ================================================================
 echo.
-echo Known causes, checked in this order:
-echo   1. PyTorch 2.9.x has this bug on Windows -- 2.8.0 works
-echo   2. Missing Visual C++ Redistributable
-echo   3. CUDA build installed but machine environment does not match
+echo  This script checks and repairs, in order:
+echo    1. Missing or broken PyTorch (the c10.dll initialization bug)
+echo    2. A CPU-only build installed by mistake (very common)
+echo    3. An NVIDIA driver too old for the selected CUDA version
+echo.
+echo  Why 2 happens: PyPI's Windows torch wheel is CPU-only. A plain
+echo  "pip install torch" succeeds and looks fine, but the GPU is never
+echo  used and torch.cuda.is_available() stays False.
+echo.
+echo  Why 3 happens: this script installs CUDA 12.6 wheels, which need
+echo  NVIDIA driver 527 or newer.
 echo.
 
 where python >nul 2>nul
 if errorlevel 1 goto NOPY
 
-echo [1/4] Currently installed version:
+echo [1/5] Currently installed PyTorch:
 python -m pip show torch 2>nul | findstr /B /C:"Version:"
 if errorlevel 1 echo         (torch is not installed)
 echo.
 
-echo [2/4] Trying to import torch:
-python -c "import torch; print('        OK, version', torch.__version__)"
-if not errorlevel 1 goto OK
-
-echo.
-echo         Import failed -- this is the c10.dll problem. Starting repair.
-echo.
-
-echo [3/4] Removing current PyTorch ...
-python -m pip uninstall -y torch
+echo [2/5] NVIDIA driver:
+where nvidia-smi >nul 2>nul
+if errorlevel 1 (
+  echo         nvidia-smi not found - no NVIDIA driver, or not in PATH.
+  echo         Training will run on CPU.
+) else (
+  for /f "tokens=*" %%l in ('nvidia-smi --query-gpu^=name^,driver_version --format^=csv^,noheader 2^>nul') do echo         %%l
+)
 echo.
 
-echo [4/4] Installing 2.8.0 (known to work) ...
-python -m pip install "torch==2.8.0"
-echo.
+echo [3/5] Trying to import torch:
+python -c "import torch;print('        OK, version', torch.__version__, '| cuda tag:', torch.version.cuda)"
+if not errorlevel 1 goto IMPORT_OK
 
+echo.
+echo         Import failed - that is the c10.dll problem. Repairing.
+echo.
+echo [4/5] Removing the broken install ...
+python -m pip uninstall -y torch torchvision torchaudio >nul 2>nul
+echo       done.
+echo.
+echo [5/5] Installing %TORCH_VER% with CUDA (about 2.5 GB) ...
+python -m pip install "torch==%TORCH_VER%" --index-url %CUDA_INDEX%
+if errorlevel 1 goto PIPFAIL
+echo.
 echo Verifying:
-python -c "import torch;print('        PyTorch',torch.__version__);print('        CUDA available:',torch.cuda.is_available());print('        Device:',torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+python -c "import torch;print('        version:', torch.__version__);print('        cuda tag:', torch.version.cuda);print('        available:', torch.cuda.is_available())"
 if errorlevel 1 goto VCFAIL
-
+python -c "import sys,torch;sys.exit(0 if torch.cuda.is_available() else 1)"
+if errorlevel 1 goto NOCUDA
 echo.
 echo ----------------------------------------------------------------
-echo  Fixed. Next step: run 2-selfcheck.bat
+echo  Fixed, and the GPU is usable.
 echo ----------------------------------------------------------------
+echo.
+echo Next step: run 2-selfcheck.bat
 echo.
 pause
 exit /b 0
 
+:IMPORT_OK
+echo.
+echo         torch imports fine.
+echo.
+python -c "import sys,torch;sys.exit(0 if torch.version.cuda is None else 1)"
+rem  torch.version.cuda is None means this is a CPU-only build.
+python -c "import sys,torch;sys.exit(0 if torch.version.cuda is None else 1)"
+if not errorlevel 1 goto NEEDCUDA
+if errorlevel 1 goto NOCUDA
+echo.
+echo All good, no repair needed.
+echo Next step: run 2-selfcheck.bat
+echo.
+pause
+exit /b 0
+
+:NEEDCUDA
+echo ================================================================
+echo  [FOUND IT] You have the CPU-only build of PyTorch
+echo ================================================================
+echo.
+echo  This is not a driver problem and not a hardware problem.
+echo  PyPI's Windows torch wheel does not include CUDA, so a plain
+echo  "pip install torch" silently gives you a CPU build.
+echo.
+echo  Reinstalling from PyTorch's CUDA index ...
+echo.
+python -m pip uninstall -y torch torchvision torchaudio >nul 2>nul
+python -m pip install "torch==%TORCH_VER%" --index-url %CUDA_INDEX%
+if errorlevel 1 goto PIPFAIL
+echo.
+echo Verifying:
+python -c "import torch;print('        version:', torch.__version__);print('        cuda tag:', torch.version.cuda);print('        available:', torch.cuda.is_available())"
+python -c "import sys,torch;sys.exit(0 if torch.cuda.is_available() else 1)"
+if errorlevel 1 goto NOCUDA
+echo.
+echo ----------------------------------------------------------------
+echo  Fixed - now running the CUDA build.
+echo ----------------------------------------------------------------
+echo.
+echo Next step: run 2-selfcheck.bat
+echo.
+pause
+exit /b 0
+
+:NOCUDA
+echo.
+echo ================================================================
+echo  [FAIL] CUDA build is in place but the GPU is still not usable
+echo ================================================================
+echo.
+echo  Work through these in order:
+echo.
+echo    1. Run "nvidia-smi". If it fails, install the NVIDIA driver.
+echo    2. Check the driver version shown above. CUDA 12.6 needs 527+.
+echo       If yours is older, update the driver from nvidia.com.
+echo    3. If you see "CUDA tag: None" in the output above, the CPU
+echo       build is somehow still active -- check with "pip show torch"
+echo       and look at the Location, then remove other torch copies.
+echo.
+echo  Send back the full output of this script if it still fails.
+echo.
+pause
+exit /b 1
+
+:PIPFAIL
+echo.
+echo [FAIL] pip install failed. See the error above.
+echo  Needs network access to download.pytorch.org and about 6 GB free.
+echo.
+pause
+exit /b 1
+
 :VCFAIL
 echo.
 echo ================================================================
-echo  Still failing -- the cause is likely a missing C++ runtime
+echo  Still failing - likely a missing C++ runtime
 echo ================================================================
 echo.
 echo  Download and install this (the x64 one):
@@ -82,11 +181,3 @@ echo [FAIL] python not found. Run 1-install.bat first.
 echo.
 pause
 exit /b 1
-
-:OK
-echo.
-echo All good, no repair needed.
-echo Next step: run 2-selfcheck.bat
-echo.
-pause
-exit /b 0
