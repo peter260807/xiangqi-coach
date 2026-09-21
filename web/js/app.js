@@ -469,9 +469,9 @@
       move: chosen.label, score: chosen.score,
       alternatives: cands.slice(1, 4)
     }), {
-      // 推理模型的思维链会吃掉大量 token，预算给足；
-      // max_tokens 只是上限、不按它计费，所以调大不增加成本。
-      maxTokens: 10000, temperature: 0.5,
+      // 推理模型的思维链会吃掉大量 token；max_tokens 只是上限、不按它计费，
+      // 所以这里不写死数值，直接跟随「设置」里的 max_tokens（默认 5 万）。
+      temperature: 0.5,
       onRetry: function (n, tokens) {
         panelBody.textContent = '输出被思维链占满，正在加大预算重试（' + tokens + ' token）…';
       },
@@ -694,7 +694,7 @@
     var text = (r.content || '').trim();
     if (!text) {
       panelBody.textContent = '模型这次没有返回正文，输出全花在思维链上了。\n\n' +
-        '到「设置」把 max_tokens 调大（建议 5000 以上），或换用 deepseek-v4-pro。';
+        '默认预算已经是 5 万 token，通常够用；若仍为空，可以到「设置」再调大 max_tokens，或换用 deepseek-v4-pro。';
       panelBody.className = 'panel-body err';
       panelTitle.textContent = '没有正文';
       return;
@@ -711,9 +711,9 @@
     var ctx = collectContext();
     var t0 = Date.now();
     XQAI.chat(XQAI.coachMessages(ctx, question), {
-      // 实测这个任务的思维链约 6800 token（正文才 150 字左右）。原来设 4000，
-      // 会先失败一次、再靠重试到 8000 才成功，白白多花一次往返。
-      maxTokens: 10000,
+      // 实测这个任务的思维链约 6800 token（正文才 150 字左右）。
+      // 原来写死 4000 / 10000，现在跟随「设置」里的 max_tokens（默认 5 万），
+      // 一次给足，不再靠重试叠预算、白花一次往返。
       onRetry: function (n, tokens) { panelBody.textContent = '上一次输出被思维链占满，正在用更大的预算重试（' + tokens + ' token）…'; },
       onReasoning: function (d, all) { panelTitle.textContent = '教练点评（思考中 ' + all.length + ' 字）'; },
       onDelta: function (d, all) { panelBody.textContent = all; }
@@ -760,7 +760,7 @@
       result: gameOver ? (record && record.result === 'win' ? '红方（你）获胜' : '黑方获胜') : '对局进行中',
       endBoard: board, evalTrace: trace
     }), {
-      maxTokens: 8000,
+      // 跟随设置里的 max_tokens（默认 5 万），不再写死 8000
       onRetry: function (n, tokens) { panelBody.textContent = '上一次输出被思维链占满，正在用更大的预算重试（' + tokens + ' token）…'; },
       onReasoning: function (d, all) { panelTitle.textContent = '复盘报告（思考中 ' + all.length + ' 字）'; },
       onDelta: function (d, all) { panelBody.textContent = all; }

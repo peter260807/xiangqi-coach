@@ -48,7 +48,7 @@ struct SettingsView: View {
                     HStack {
                         Text("max_tokens")
                         Spacer()
-                        TextField("6000", value: $config.maxTokens, format: .number)
+                        TextField("50000", value: $config.maxTokens, format: .number)
                             .keyboardType(.numberPad)
                             .multilineTextAlignment(.trailing)
                             .frame(width: 90)
@@ -112,7 +112,7 @@ struct SettingsView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("保存") {
-                        if config.maxTokens < 256 { config.maxTokens = 6000 }
+                        if config.maxTokens < 256 { config.maxTokens = 50000 }
                         config.save()
                         dismiss()
                     }

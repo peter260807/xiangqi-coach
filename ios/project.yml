@@ -16,9 +16,17 @@ settings:
     SWIFT_STRICT_CONCURRENCY: minimal
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     GENERATE_INFOPLIST_FILE: YES
-    CURRENT_PROJECT_VERSION: 1
+    CURRENT_PROJECT_VERSION: 2
     MARKETING_VERSION: "1.0.0"
     DEVELOPMENT_LANGUAGE: zh-Hans
+    # 设备构建（archive / ad hoc 打包）必须有团队 ID，否则 xcodebuild 会直接
+    # 报 "requires a development team"。模拟器构建用不到它，留空也没关系。
+    #
+    # 与 WeiLian 项目保持同一套做法：团队 ID 不写进仓库，生成工程时传进来 ——
+    #     TEAM_ID=<你的团队ID> xcodegen generate
+    # 打包脚本 ios/scripts/make-adhoc-ipa.sh 会自动带上。
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: "${TEAM_ID}"
 
 targets:
   XiangqiCoach:
@@ -39,9 +47,13 @@ targets:
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         # iPhone：竖屏为主，也允许横屏
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        # iPad 固定横屏。棋盘是横向展开的，竖屏下宽度不够、只能把棋盘压小，
-        # 两侧还会留出大片空白 —— 横屏才能把它撑到最大。
-        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        # iPad：四个方向都放开。原来固定横屏的理由是「棋盘横向展开、竖屏只能压小」，
+        # 但竖屏下改成「棋盘全屏」单栏布局（棋盘铺满宽度、操作收进浮层）之后，
+        # 竖屏反而比横屏更能看清棋盘 —— 见 PlayView.portraitLayout。
+        # 附带好处：四个方向全覆盖后，归档时那条
+        # 「All interface orientations must be supported unless the app requires full screen」
+        # 警告也随之消失。
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: 需要访问相册，用来读取棋盘照片并识别局面。
         INFOPLIST_KEY_NSCameraUsageDescription: 需要访问相机，用来拍摄棋盘并识别局面。
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

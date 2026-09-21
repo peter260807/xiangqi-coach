@@ -15,7 +15,7 @@
     DEFAULTS.baseUrl = 'https://api.deepseek.com';
     DEFAULTS.model = DEFAULTS.model || 'deepseek-flash';
     DEFAULTS.temperature = 0.6;
-    DEFAULTS.maxTokens = 6000;
+    DEFAULTS.maxTokens = 50000;
     DEFAULTS.timeoutMs = 180000;
   }
   DEFAULTS.apiKey = DEFAULTS.apiKey || '';
@@ -147,10 +147,17 @@
     }
 
     /* 推理模型会把思维链算进 max_tokens，偶尔正文被挤没。
-       这里检测到「只有思维链没有正文」时自动加倍预算重试。 */
-    function run() {
+       这里检测到「只有思维链没有正文」时自动加倍预算重试。
+
+       注意上面那个上限原先是写死的 16000 —— **那才是真正的瓶颈**：
+       设置里把 max_tokens 调多大，都会被它压回 16000。
+       现在只留一个远高于各家上限的天花板；服务端嫌 max_tokens 太大时
+       （各家上限差别很大，8K / 16K / 64K 都有）退化到保守值再试一次，
+       而不是让整个功能直接报错。 */
+    var CEILING = 200000, SAFE_TOKENS = 8192;
+    function run(forced) {
       tries++;
-      var tokens = Math.min(baseTokens * Math.pow(2, tries - 1), 16000);
+      var tokens = forced || Math.min(baseTokens * Math.pow(2, tries - 1), CEILING);
       return attempt(tokens).then(function (r) {
         r.maxTokensUsed = tokens;
         var hasText = !!(r.content && r.content.trim());
@@ -161,6 +168,12 @@
         }
         r.retried = tries - 1;
         return r;
+      }, function (err) {
+        var m = String((err && err.message) || '');
+        if (!forced && m.indexOf('HTTP 400') === 0 && m.indexOf('max_tokens') >= 0) {
+          return run(SAFE_TOKENS);
+        }
+        throw err;
       });
     }
     return run();

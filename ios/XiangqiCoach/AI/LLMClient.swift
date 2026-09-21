@@ -36,6 +36,14 @@ final class LLMClient {
 
     // MARK: 请求
 
+    /// max_tokens 的天花板。只用来防住手抖填个离谱的数 ——
+    /// 实测 DeepSeek 接口连 20 万都收，真正的上限在模型侧。
+    static let maxTokensCeiling = 200_000
+
+    /// 服务端嫌 max_tokens 太大时退到的保守值。
+    /// 各家 OpenAI 兼容接口的上限差别很大（8K / 16K / 64K 都有），走一次降级总比整个功能报错好。
+    static let safeMaxTokens = 8192
+
     /// 流式对话。onReasoning / onDelta 会在主线程回调（用于实时刷新界面）
     static func chat(messages: [[String: String]],
                      config: AIConfig = .shared,
@@ -47,26 +55,39 @@ final class LLMClient {
         guard config.isConfigured else { throw LLMError.notConfigured }
         guard let url = config.chatEndpoint else { throw LLMError.badURL }
 
-        let base = maxTokens ?? config.maxTokens
+        // 这里原来写死 min(base * 2, 16000) —— 那个 16000 才是真正的瓶颈：
+        // 就算把配置调到 5 万，也会被它压回 16000。
+        let base = max(256, maxTokens ?? config.maxTokens)
+        var tokens = min(base, maxTokensCeiling)
         var lastError: Error?
+        var degraded = false
 
-        // 最多尝试两次：第一次发现正文被思维链吃光，就用双倍预算重试
-        for attempt in 0..<2 {
-            let tokens = min(base * (1 << attempt), 16000)
+        // 最多三轮，每轮解决不同的问题：
+        //   第 1 轮：按配置的预算
+        //   第 2 轮：正文被思维链吃光 -> 预算翻倍
+        //   第 3 轮：服务端不接受这个 max_tokens -> 退到保守值
+        for round in 0..<3 {
             do {
                 var r = try await perform(url: url, config: config, messages: messages,
                                           tokens: tokens,
                                           temperature: temperature ?? config.temperature,
                                           stream: (onDelta != nil || onReasoning != nil),
                                           onReasoning: onReasoning, onDelta: onDelta)
-                r.retried = attempt
+                r.retried = round
                 r.maxTokensUsed = tokens
                 let hasText = !r.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 let hasReason = !r.reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                if hasText || !hasReason || attempt == 1 { return r }
+                if hasText || !hasReason || round == 2 { return r }
+                tokens = min(tokens * 2, maxTokensCeiling)      // 思维链把正文吃光了
+            } catch LLMError.http(let code, let msg)
+                        where code == 400 && msg.lowercased().contains("max_token") && !degraded {
+                // 服务商对 max_tokens 的上限不同，超了直接 400。
+                // 别让这一条把整个功能打死 —— 降到保守值重试一次。
+                lastError = LLMError.http(code, msg)
+                degraded = true
+                tokens = safeMaxTokens
             } catch {
-                lastError = error
-                break
+                throw error
             }
         }
         if let e = lastError { throw e }

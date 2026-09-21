@@ -48,8 +48,7 @@ final class AIConfig: ObservableObject {
 
         let t = UserDefaults.standard.object(forKey: "ai.temperature") as? Double
         temperature = t ?? d.temperature
-        let m = UserDefaults.standard.object(forKey: "ai.maxTokens") as? Int
-        maxTokens = m ?? d.maxTokens
+        maxTokens = AIConfig.resolveMaxTokens(default: d.maxTokens)
         let to = UserDefaults.standard.object(forKey: "ai.timeoutSec") as? Double
         timeoutSec = to ?? d.timeoutSec
     }
@@ -86,7 +85,7 @@ final class AIConfig: ObservableObject {
         var apiKey = ""
         var model = "deepseek-flash"
         var temperature = 0.6
-        var maxTokens = 6000
+        var maxTokens = 50000
         var timeoutSec = 180.0
     }
 
@@ -105,5 +104,25 @@ final class AIConfig: ObservableObject {
             if out.apiKey.isEmpty == false { break }
         }
         return out
+    }
+
+    /// 取 max_tokens 的实际生效值（UserDefaults 优先，其次 bundle 默认）。
+    ///
+    /// 单独抽出来是因为这里有个隐蔽的坑：旧版本默认值是 6000，用户**即使没动过设置**，
+    /// 只要点过一次「保存」，UserDefaults 里就留下了一份 6000 —— 它会盖掉新的默认值，
+    /// 让人以为「改了默认却不起作用」。所以做一次性迁移：
+    /// 只把「不大于旧默认值」的存量抬到新默认；用户手动调过（大于旧默认）的值原样保留。
+    private static func resolveMaxTokens(default dft: Int) -> Int {
+        let u = UserDefaults.standard
+        let legacyDefault = 6000
+        let migratedKey = "ai.maxTokensMigratedToV2"
+
+        guard let stored = u.object(forKey: "ai.maxTokens") as? Int else { return dft }
+        if stored <= legacyDefault, u.bool(forKey: migratedKey) == false {
+            u.set(dft, forKey: "ai.maxTokens")
+            u.set(true, forKey: migratedKey)
+            return dft
+        }
+        return stored
     }
 }

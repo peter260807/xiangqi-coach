@@ -337,7 +337,10 @@ final class GameState: ObservableObject {
 
                 do {
                     let msgs = Prompts.pickMove(board: snapshot, side: .black, candidates: cands)
-                    let r = try await LLMClient.chat(messages: msgs, maxTokens: 2500, temperature: 0.3)
+                    // 预算跟随设置里的 max_tokens。原来写死 2500 ——
+                    // 推理模型的思维链动辄 5000+，预算不够时模型给不出着法，
+                    // 会**静默**回退到引擎首选，看起来像"大模型没起作用"。
+                    let r = try await LLMClient.chat(messages: msgs, maxTokens: nil, temperature: 0.3)
 
                     if let obj = LLMClient.extractJSON(r.content),
                        let asked = obj["move"] as? String,

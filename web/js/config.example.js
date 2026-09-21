@@ -15,9 +15,10 @@
     knownModels: ['deepseek-flash', 'deepseek-v4-pro'],
     temperature: 0.6,
 
-    /* 这两个模型是推理模型，思维链会计入 max_tokens：
-       短点评 2500 够用，整局复盘要 6000~8000，给少了正文会是空的。 */
-    maxTokens: 6000,
+    /* 这两个模型是推理模型，思维链会计入 max_tokens，而思维链长度波动很大
+       （同一个任务从几千到上万 token 都有）。max_tokens 只是上限、不按它计费，
+       所以直接给足 5 万：既不会因为预算不够导致正文为空，也不会多花钱。 */
+    maxTokens: 50000,
     timeoutMs: 180000
   };
 

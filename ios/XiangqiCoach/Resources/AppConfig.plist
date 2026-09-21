@@ -2,18 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>baseURL</key>
-	<string>https://api.deepseek.com</string>
-	<!-- 提交到仓库的版本不含 Key。本机可以另放 AppConfig.local.plist 预填，
-	     也可以直接在 App 的「模型设置」里填一次，之后会记住。 -->
 	<key>apiKey</key>
 	<string></string>
+	<key>baseURL</key>
+	<string>https://api.deepseek.com</string>
+	<key>maxTokens</key>
+	<integer>50000</integer>
 	<key>model</key>
 	<string>deepseek-flash</string>
 	<key>temperature</key>
-	<real>0.6</real>
-	<key>maxTokens</key>
-	<integer>6000</integer>
+	<real>0.59999999999999998</real>
 	<key>timeoutSec</key>
 	<real>180</real>
 </dict>

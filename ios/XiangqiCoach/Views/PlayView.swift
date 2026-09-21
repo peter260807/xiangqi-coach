@@ -19,15 +19,42 @@ struct PlayView: View {
     /// 自动化截图时可用 SIMCTL_CHILD_START_NOTATION=1 直接打开棋谱面板
     @State private var showNotation = ProcessInfo.processInfo.environment["START_NOTATION"] == "1"
 
+    /// 手动切换过「棋盘全屏」就以手动为准；nil 表示跟随屏幕方向（竖屏自动进全屏）
+    @State private var focusOverride: Bool?
+    /// 全屏模式下，把「场景 / 难度 / 模式 / 棋谱」收进这个浮层
+    @State private var showControls = false
+
     private var scenes: [XQScene] { SceneCatalog.all(game.library) }
 
     /// 宽高都宽松（iPad 全屏、iPad 分屏的大部分）时走左右分栏：
     /// 棋盘占左边，操作与棋谱记录占右边 —— 不用来回滚动，棋盘也能吃满高度。
     private var isWide: Bool { hSize == .regular && vSize == .regular }
 
+    /// 决定用哪套布局。
+    ///
+    /// 竖屏要单独判：iPad 横竖屏的尺寸类**都是** regular/regular，
+    /// 光看 `isWide` 分不出来 —— 之前 iPad 竖屏因此也走左右分栏，
+    /// 棋盘被挤到左边只占约六成宽。这里改成看几何：高 > 宽 就是竖屏。
+    ///
+    /// 模拟器没法用命令旋转屏幕，所以留一个环境变量口子，
+    /// 让自动化截图能分别截到两套布局（SIMCTL_CHILD_START_LAYOUT=focus|wide|compact）。
+    private func layoutMode(portrait: Bool) -> String {
+        if let forced = ProcessInfo.processInfo.environment["START_LAYOUT"] { return forced }
+        if let manual = focusOverride { return manual ? "focus" : (isWide ? "wide" : "compact") }
+        if portrait && isWide { return "focus" }      // 竖屏自动「棋盘全屏」
+        return isWide ? "wide" : "compact"
+    }
+
     var body: some View {
-        Group {
-            if isWide { wideLayout } else { compactLayout }
+        // 根上这层 GeometryReader 只为拿到宽高，不参与具体排布
+        GeometryReader { geo in
+            Group {
+                switch layoutMode(portrait: geo.size.height > geo.size.width) {
+                case "focus": focusLayout(geo.size)
+                case "wide": wideLayout
+                default: compactLayout
+                }
+            }
         }
         .background(Palette.paper.ignoresSafeArea())
         .navigationTitle("")
@@ -61,6 +88,7 @@ struct PlayView: View {
         }
         .sheet(isPresented: $showCoach) { coachSheet }
         .sheet(isPresented: $showNotation) { NotationSheet(game: game) }
+        .sheet(isPresented: $showControls) { controlsSheet }
     }
 
     // MARK: - 布局
@@ -108,6 +136,7 @@ struct PlayView: View {
 
                 ScrollView {
                     VStack(spacing: 8) {
+                        focusEntryButton
                         controls
                         Spacer(minLength: 10)
                         moveList
@@ -121,6 +150,110 @@ struct PlayView: View {
             .padding(.horizontal, padH)
             .padding(.top, 6)
             .padding(.bottom, 10)
+        }
+    }
+
+    // MARK: - 棋盘全屏（竖屏自动进入，横屏可手动进入）
+
+    /// 全屏棋盘：取消左右分栏，棋盘按「宽度、高度里更紧的那一维」放大到极限。
+    /// iPad 竖屏下棋盘宽度从分栏时的约 620pt 提到接近满宽（1000pt 上下）。
+    private func focusLayout(_ size: CGSize) -> some View {
+        let padH: CGFloat = 10
+        // 顶部胜率条 + 状态条 + 底部按钮条 + 间距与上下内边距的实测总和约 182pt，留点余量
+        let chrome: CGFloat = 200
+        let byWidth = max(240, size.width - padH * 2)
+        let byHeight = max(240, size.height - chrome) * BoardMetrics.aspect
+        let boardW = min(byWidth, byHeight)
+        let boardH = boardW / BoardMetrics.aspect
+        let portrait = size.height > size.width
+
+        return VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                evalBar
+                // 竖屏本来就是自动全屏的，再给个「收起」反而让人迷糊（收起来之后很挤），
+                // 所以只对「横屏手动进入」提供退出入口。
+                if !portrait { focusExitButton }
+            }
+            boardArea
+                .frame(width: boardW, height: boardH)
+            statusBar
+            focusControls
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, padH)
+        .padding(.top, 6)
+        .padding(.bottom, 10)
+        .frame(maxWidth: .infinity)
+    }
+
+    /// 分栏布局（横屏）下的入口：切到全屏棋盘
+    private var focusEntryButton: some View {
+        Button {
+            focusOverride = true
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                Text("棋盘全屏")
+                Spacer()
+                Text("竖屏自动").font(.system(size: 11)).foregroundStyle(Palette.ink3)
+            }
+            .font(.system(size: 12.5))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Palette.card)
+            .foregroundStyle(Palette.ink)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Palette.line, lineWidth: 0.5))
+        }
+    }
+
+    private var focusExitButton: some View {
+        Button {
+            focusOverride = false
+        } label: {
+            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                .font(.system(size: 15, weight: .medium))
+                .frame(width: 46, height: 46)
+                .background(Palette.card)
+                .foregroundStyle(Palette.ink2)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Palette.line, lineWidth: 0.5))
+        }
+        .accessibilityLabel("退出棋盘全屏")
+    }
+
+    /// 全屏模式的底部按钮条：只留最常用的四个，其余进「更多」浮层
+    private var focusControls: some View {
+        HStack(spacing: 8) {
+            actionButton("提示", icon: "lightbulb") { requestHint() }
+            actionButton("悔棋", icon: "arrow.uturn.backward") { game.undo() }
+            actionButton("重开", icon: "arrow.clockwise") { game.load(scene: game.scene) }
+            actionButton("点评", icon: "text.bubble") { coach(question: nil) }
+            actionButton("更多", icon: "ellipsis.circle") { showControls = true }
+        }
+    }
+
+    /// 全屏模式下的「更多」浮层：场景、难度、对弈模式、演示条与棋谱都在这里
+    private var controlsSheet: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 10) {
+                    controls
+                    moveList
+                }
+                .padding(16)
+                .padding(.bottom, 24)
+            }
+            .background(Palette.paper.ignoresSafeArea())
+            .navigationTitle("对局与设置")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { showControls = false }
+                }
+            }
         }
     }
 
@@ -623,7 +756,9 @@ struct PlayView: View {
             do {
                 let r = try await LLMClient.chat(
                     messages: Prompts.coach(ctx, question: question),
-                    maxTokens: 4000,
+                    // 走配置里的 max_tokens（默认 5 万），不写死数值 ——
+                    // 推理模型的思维链同样计入这个预算，给少了正文会被挤空
+                    maxTokens: nil,
                     onReasoning: { total in
                         panelTitle = "教练点评（思考中 \(total.count) 字）"
                     },
@@ -671,7 +806,8 @@ struct PlayView: View {
             do {
                 let r = try await LLMClient.chat(
                     messages: Prompts.review(ctx),
-                    maxTokens: 8000,
+                    // 同上：跟随设置里的 max_tokens，不再写死 8000
+                    maxTokens: nil,
                     onReasoning: { total in
                         panelTitle = "复盘报告（思考中 \(total.count) 字）"
                     },
@@ -694,7 +830,8 @@ struct PlayView: View {
         if text.isEmpty {
             panelTitle += "（没有正文）"
             panelBody = "模型这次没有返回正文，输出全花在思维链上了。\n\n"
-                + "到「设置」把 max_tokens 调大（建议 5000 以上），或换用 deepseek-v4-pro。"
+                + "默认预算已经是 5 万 token，通常够用；若仍然为空，"
+                + "可到「设置」再调大 max_tokens，或换用 deepseek-v4-pro。"
         } else {
             panelTitle += String(format: "（%.1f 秒）", Date().timeIntervalSince(t0))
             panelBody = text + (r.truncated ? "\n\n—— 输出已达 max_tokens 上限，最后一段可能被截断。" : "")
