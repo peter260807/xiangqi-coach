@@ -81,7 +81,11 @@
 
     var stream = typeof opts.onDelta === 'function' || typeof opts.onReasoning === 'function';
     var baseTokens = opts.maxTokens || cfg.maxTokens;
-    var maxTries = Math.max(1, opts.attempts || 2);
+    // 默认给 3 次机会。推理模型的思维链长度波动很大 —— 同一个任务有时烧
+    // 5000 token，有时上万；只给 2 次的话，2500 -> 5000 就到顶了，
+    // 遇到"想得久"的局面照样会正文为空。max_tokens 只是上限、
+    // 不按它计费，所以多留一次兜底不会增加成本。
+    var maxTries = Math.max(1, opts.attempts || 3);
     var tries = 0;
 
     function attempt(tokens, forcePlain) {

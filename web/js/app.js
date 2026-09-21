@@ -451,7 +451,12 @@
     showPanel('大模型选着', '引擎已算出 ' + cands.length + ' 个合法候选，正在请模型选择…');
 
     XQAI.chat(XQAI.pickMoveMessages({ board: board, side: 'b', candidates: cands }), {
-      maxTokens: 2500, temperature: 0.3,
+      // 实测：这个任务的思维链要 5000+ token。原来设 2500，正文会被思维链挤没
+      // （实测输出 5001 token 全是思维链、正文 0 字），JSON 自然解析不出来，
+      // 于是一直静默回退到引擎首选 —— 也就是"混合对弈"这个功能其实没生效过。
+      // max_tokens 只是上限、并不按它计费，所以给足即可，不会增加成本。
+      maxTokens: 10000, temperature: 0.3,
+      onRetry: function (n, tokens) { panelBody.textContent = '输出被思维链占满，正在加大预算重试（' + tokens + ' token）…'; },
       onReasoning: function (d, all) { panelTitle.textContent = '大模型选着（思考中 ' + all.length + ' 字）'; },
       onDelta: function (d, all) { panelBody.textContent = all; }
     }).then(function (r) {
@@ -691,7 +696,9 @@
     var ctx = collectContext();
     var t0 = Date.now();
     XQAI.chat(XQAI.coachMessages(ctx, question), {
-      maxTokens: 4000,
+      // 实测这个任务的思维链约 6800 token（正文才 150 字左右）。原来设 4000，
+      // 会先失败一次、再靠重试到 8000 才成功，白白多花一次往返。
+      maxTokens: 10000,
       onRetry: function (n, tokens) { panelBody.textContent = '上一次输出被思维链占满，正在用更大的预算重试（' + tokens + ' token）…'; },
       onReasoning: function (d, all) { panelTitle.textContent = '教练点评（思考中 ' + all.length + ' 字）'; },
       onDelta: function (d, all) { panelBody.textContent = all; }
