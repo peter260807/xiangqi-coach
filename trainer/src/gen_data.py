@@ -97,6 +97,27 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENGINE_DIR = os.path.join(ROOT, 'engine')
 
 
+# 发布包里这些后缀是压缩包、权重或说明文档，不是引擎本体。
+# 兜底扫描必须排除掉，否则会把 Pikafish.2026-09-06.7z 当成引擎返回，
+# 报错时只看到"启动失败"，完全看不出是选错了文件。
+_NOT_ENGINE_SUFFIX = ('.7z', '.zip', '.tar', '.gz', '.tgz', '.xz', '.bz2',
+                      '.nnue', '.txt', '.md', '.pdf', '.dmg', '.pkg')
+
+
+def _is_runnable(path):
+    """判断这个路径像不像能直接执行的引擎本体。"""
+    low = path.lower()
+    if low.endswith(_NOT_ENGINE_SUFFIX):
+        return False
+    if not os.path.isfile(path):
+        return False
+    if low.endswith('.exe'):
+        return True
+    # Unix 上没有扩展名可依据，看可执行位。从压缩包解出来的通常有；
+    # 若被拷贝时丢了权限位就会落空 —— describe_engine_dir 里会提示 chmod +x。
+    return os.access(path, os.X_OK)
+
+
 def find_engine(explicit=None):
     """找 Pikafish 可执行文件，找不到返回 None。
 
@@ -108,26 +129,38 @@ def find_engine(explicit=None):
         return explicit if os.path.isfile(explicit) else None
 
     patterns = [
+        # Windows：官网包解出来叫 Pikafish-Windows-x86-64-universal.exe
         os.path.join(ENGINE_DIR, 'pikafish*.exe'),
         os.path.join(ENGINE_DIR, 'Pikafish*.exe'),
         os.path.join(ENGINE_DIR, '**', 'pikafish*.exe'),
         os.path.join(ENGINE_DIR, '**', 'Pikafish*.exe'),
+        # macOS / Linux：官网包解出来叫 Pikafish-MacOS-universal、
+        # Pikafish-Linux-x86-64，**没有扩展名**，上面那些 .exe 模式
+        # 在非 Windows 平台一个都匹配不上，所以必须单独列出来。
+        os.path.join(ENGINE_DIR, 'Pikafish-MacOS*'),
+        os.path.join(ENGINE_DIR, 'Pikafish-Linux*'),
+        os.path.join(ENGINE_DIR, 'Pikafish-macos*'),
+        os.path.join(ENGINE_DIR, 'Pikafish-linux*'),
+        os.path.join(ENGINE_DIR, '**', 'Pikafish-MacOS*'),
+        os.path.join(ENGINE_DIR, '**', 'Pikafish-Linux*'),
+        os.path.join(ENGINE_DIR, '**', 'Pikafish-macos*'),
+        os.path.join(ENGINE_DIR, '**', 'Pikafish-linux*'),
+        # 用户自己改过名的
         os.path.join(ENGINE_DIR, 'pikafish'),
         os.path.join(ENGINE_DIR, '**', 'pikafish'),
     ]
     for pat in patterns:
-        hits = sorted(glob.glob(pat, recursive=True))
-        if hits:
-            return hits[0]
+        for hit in sorted(glob.glob(pat, recursive=True)):
+            if _is_runnable(hit):
+                return hit
 
-    # 兜底：目录里任何一个 exe。从官网下载下来通常叫
-    # Pikafish-Windows-x86-64-universal.exe，用户不一定会改名。
-    # 引擎目录里一般就这一个可执行文件，用它基本不会错。
-    for pat in (os.path.join(ENGINE_DIR, '*.exe'),
-                os.path.join(ENGINE_DIR, '**', '*.exe')):
-        hits = sorted(glob.glob(pat, recursive=True))
-        if hits:
-            return hits[0]
+    # 兜底：目录里任何一个可执行文件。用户下载后往往不改名，
+    # 而引擎目录里一般就它一个能跑的。
+    for pat in (os.path.join(ENGINE_DIR, '*'),
+                os.path.join(ENGINE_DIR, '**', '*')):
+        for hit in sorted(glob.glob(pat, recursive=True)):
+            if _is_runnable(hit):
+                return hit
     return None
 
 
@@ -171,7 +204,33 @@ def describe_engine_dir():
                          % (name, os.path.getsize(full) / 1024 / 1024))
     if len(entries) > 20:
         lines.append('  ...（还有 %d 项）' % (len(entries) - 20))
+
+    # 目录里有东西、却仍然说找不到引擎，最常见的两种原因：
+    # 文件还是压缩包（没解压），或者拷贝时丢了可执行权限位 ——
+    # 后者在 macOS/Linux 上很常见，报错却只显示"找不到引擎"，容易查错方向。
+    #
+    # 两类要分开说：压缩包该解压，不可执行的文件该 chmod +x。
+    # （注意这里必须排除「已经可执行」的文件，否则引擎好端端地放在那儿
+    #   也会被列进来建议 chmod，反而把人带偏。）
+    archives = [n for n in entries
+                if n.lower().endswith(('.7z', '.zip', '.tar', '.gz',
+                                       '.tgz', '.xz', '.bz2'))]
+    noexec = [n for n in entries
+              if not os.path.isdir(os.path.join(ENGINE_DIR, n))
+              and not n.lower().endswith(_NOT_ENGINE_SUFFIX)
+              and not os.access(os.path.join(ENGINE_DIR, n), os.X_OK)]
+    if archives or noexec:
+        lines.append('')
+        if archives:
+            lines.append('  有压缩包还没解压：%s' % '、'.join(archives[:3]))
+        if noexec:
+            lines.append('  这些文件缺少可执行权限位，补一下再试：')
+            for n in noexec[:3]:
+                lines.append('    chmod +x "%s"' % os.path.join(ENGINE_DIR, n))
+
     return '\n'.join(lines)
+
+
 BATCH = 8192             # 攒够这么多条再落盘，减少 IO 次数
 MULTIPV_N = 6            # 开局随机阶段的候选数
 
