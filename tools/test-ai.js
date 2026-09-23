@@ -60,21 +60,22 @@ function line(s) { console.log(s); }
   } catch (e) { line('失败: ' + e.message); }
 
   line('');
-  line('=== 4. 混合对弈选着（模型从候选里挑，必须能解析出合法着法） ===');
+  line('=== 4. 混合对弈的「解释」环节（引擎定着法，模型只解释） ===');
   t0 = Date.now();
   try {
-    var pick = await AI.chat(AI.pickMoveMessages({ board: board, side: 'r', candidates: cands }), { maxTokens: 2500, temperature: 0.3 });
+    /* 这里原来测的是 pickMoveMessages（让模型从候选里挑一步），那个 API 已经移除：
+       实测模型给不出可靠着法，混合对弈改成了「引擎定着法 + 模型解释」。
+       所以现在测的是 explainMoveMessages —— 着法不经模型，只看解释质量。 */
+    var best = cands[0];
+    var ex = await AI.chat(AI.explainMoveMessages({
+      board: board, side: 'r',
+      move: best.label, score: best.score,
+      alternatives: cands.slice(1, 4)
+    }), { maxTokens: 4000, temperature: 0.5 });
     line('耗时 ' + (Date.now() - t0) + 'ms');
-    line('原始回复: ' + JSON.stringify((pick.content || '').trim().slice(0, 200)));
-    var obj = AI.extractJson(pick.content);
-    if (!obj) { line('结果: 未能解析出 JSON'); }
-    else {
-      var mv = XQ.findMoveByLabel(board, 'r', obj.move);
-      line('模型选择: ' + obj.move + '   理由: ' + (obj.reason || ''));
-      line('合法性校验: ' + (mv ? '通过，解析为着法 ' + XQ.moveLabel(board, mv) : '失败——将回退到引擎推荐着法'));
-      var candLabels = cands.map(function (c) { return c.label; });
-      line('是否在候选列表内: ' + (candLabels.indexOf(obj.move) >= 0 ? '是' : '否'));
-    }
+    line('引擎定下的着法: ' + best.label + '（' + best.score + '）');
+    line('--- 解释 ---');
+    line((ex.content || '').trim() || '（无正文 —— 输出可能全花在思维链上了，调大 maxTokens）');
   } catch (e) { line('失败: ' + e.message); }
 
   line('');

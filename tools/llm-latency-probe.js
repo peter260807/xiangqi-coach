@@ -78,24 +78,27 @@ function report(tag, dt, usage, extra) {
     '\n  正文      : ' + ((r1.content || '').trim().length) + ' 字' +
     '\n  ' + (r1.content || '').trim().split('\n')[0].slice(0, 70));
 
-  // ---- 对弈选着 ----
+  // ---- 对弈中的「解释」环节（引擎定着法，模型只解释）----
+  /* 原来这里测的是 pickMoveMessages（模型从候选里挑着法）。那个任务已从 App 移除：
+     实测模型给不出可靠着法，改成「引擎定着法 + 模型解释」，所以探测目标跟着换。 */
   t0 = Date.now();
-  let pickRetry = '无';
-  const r2 = await AI.chat(AI.pickMoveMessages({
+  let explainRetry = '无';
+  const r2 = await AI.chat(AI.explainMoveMessages({
     board: b, side: 'b',
-    candidates: cands.map(c => ({ label: c.label, score: c.score }))
+    move: cands[0].label, score: cands[0].score,
+    alternatives: cands.slice(1, 4).map(c => ({ label: c.label, score: c.score }))
   }), {
-    maxTokens: pickTokens, temperature: 0.3,
-    onRetry: (n, tk) => { pickRetry = '第 ' + n + ' 次，预算 ' + tk; }
+    maxTokens: pickTokens, temperature: 0.5,
+    onRetry: (n, tk) => { explainRetry = '第 ' + n + ' 次，预算 ' + tk; }
   });
-  const obj = AI.extractJson(r2.content);
-  report('对弈选着', Date.now() - t0, r2.usage,
-    '  重试      : ' + pickRetry +
-    '\n  解析结果  : ' + (obj ? JSON.stringify(obj) : '失败（正文为空或格式不对）') +
-    '\n  引擎首选  : ' + cands[0].label);
+  report('对弈解释', Date.now() - t0, r2.usage,
+    '  重试      : ' + explainRetry +
+    '\n  正文      : ' + ((r2.content || '').trim().length) + ' 字' +
+    '\n  引擎定着法: ' + cands[0].label + '（' + cands[0].score + '）');
 
   console.log('=== 对比参考 ===');
   console.log('大模型：秒级');
-  console.log('NNUE  ：约 21 微秒（纯 numpy）/ 亚微秒（C++ + SIMD + 增量更新）');
+  // 具体数字会随网络规模与机器变化，别在这里写死 —— 完整实测见 docs/nnue-vs-llm.md
+  console.log('NNUE  ：微秒级（纯 numpy）/ 亚微秒（C++ + SIMD + 增量更新）');
   process.exit(0);
 })().catch(e => { console.error('失败: ' + e.message); process.exit(1); });
