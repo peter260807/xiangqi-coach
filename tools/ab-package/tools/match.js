@@ -34,9 +34,35 @@
  *                      要量棋力请设 4~8，让每对的起手局面都不同（同一对内仍相同）
  *   --max-ply <n>      单局手数上限（默认 200）
  *   --seed <n>         开局的取用顺序（默认 1）
+ *   --jobs <n>         并行跑 n 局（默认 1 = 串行）。见下面「为什么要并行」
+ *   --clear-tt         每局开局清空置换表（默认是**跨局保留**，即引擎本来的行为）
+ *
+ *   为什么默认保留：置换表跨手复用就是这个引擎「越下越快」的来源，清掉之后
+ *   中局每手要慢好几倍（实测开局段只慢 1.4 倍，走到中局变 ~8 倍）。而 A 与 B
+ *   在同一个 worker 里共用同一份表，保留它并不偏袒任何一方。
+ *
+ *   什么时候要加 --clear-tt：想让这一批**逐位可复现**、或者要验证「并行跑出来
+ *   的局和串行一模一样」时。置换表命中会改着法排序（SCORE_TT），排序又决定
+ *   LMR 的缩减幅度 —— 于是不清表时「固定深度下的结果」会依赖这台机器上前面刚
+ *   跑过哪几局：同一批 8 局，串行（表一路累积）与并行 4 路（每个 worker 自带
+ *   空表）从第 2 局起分叉，第 3 局一边「28 手 A 负」一边「69 手 A 胜」。
+ *   所以并行版的机制自证就是拿 `--clear-tt 加 --depth` 做的：那个组合下
+ *   并行 1/4/8 路跑出的 gamelog 逐字节相同。
  *   --gamelog <路径>    把每局结果**边跑边落盘**（JSONL），支持中断后续跑
  *   --fresh            忽略已有 gamelog，从第 1 局重来
  *   --verbose          打印每局的着法（中文记谱）
+ *
+ * 为什么要并行：对局之间是**独立**的（第 g 局的起手局面只由 g 决定，与其它局
+ * 无关），可这台机器原来只用一个核 —— 串行循环里一局跑完才开下一局，而两边
+ * 引擎都是 `JsEngine` 时连子进程都没有：两个引擎同在一个 Node 进程里交替思考。
+ * 一台 8 核机跑 1200 局，7 个核全程闲着。`--jobs 8` 让 8 个 worker 各跑一摊，
+ * 墙钟时间基本按并行度缩短。
+ *
+ * ⚠️ 并行度别超过**物理核数**：每个 worker 峰值占 1 核（对局里 A/B 是交替思考，
+ * 不是同时），但超了之后引擎拿不到够用的 CPU，`--ms` 时限下实际到达的层数会
+ * 一起降低 —— 双方同等降低，比较还算公平，但你会误以为引擎变弱了。
+ * 想知道「并行有没有改变结果」就跑 `--depth <n>`（固定深度与时间无关），
+ * 那才是确定性的，可以逐位比对；`--ms` 是时间控制的，本身就不逐位可复现。
  *
  * 断点续跑：给了 `--gamelog` 时，每局结束就把结果 append + fsync 落盘；
  * 再次启动发现该文件存在，就**跳过已完成的局**接着跑，最后按全部局汇总。
@@ -50,8 +76,9 @@
 
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const crypto = require('crypto');
-const { spawnSync } = require('child_process');
+const { spawnSync, fork } = require('child_process');
 const { UciEngine } = require('./lib/uci-engine.js');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -87,7 +114,24 @@ class JsEngine {
     this.idx = [];       // 内部索引形式的着法历史，给「重复局面判和」用
   }
   init() { return Promise.resolve(); }
-  newGame() { return Promise.resolve(); }
+  /** 默认什么都不做 —— 置换表跨局留着，跟引擎在真实对局里的行为一致。
+   *
+   *  加了 `--clear-tt` 才清表，用途只有一个：让这一批**逐位可复现**。
+   *  置换表是模块级、跨局累积的，而 TT 命中会改着法排序（SCORE_TT），排序又
+   *  决定 LMR 的缩减幅度 —— 不清表时「固定深度下的结果」会依赖这台机器上前面
+   *  刚跑过哪几局。实测：同一批 8 局、同引擎自对弈，串行（表一路累积）与并行
+   *  4 路（每个 worker 自带空表）从第 2 局起分叉，第 3 局一边「28 手 A 负」、
+   *  另一边「69 手 A 胜」—— 差得比被测的改进还大。
+   *  所以「验证并行没有改变结论」必须配 --clear-tt，这也正是为什么它能作为
+   *  自证口径：并行 1 / 4 / 8 路跑出的 gamelog 在那个组合下逐字节相同。
+   *
+   *  引擎早就把 resetSearch 导出给「测试要可复现的数字」用了（见
+   *  web/js/engine.js 导出块末尾的注释），这里补上那次调用。
+   *  A / B 两份引擎都有这个接口，所以清表是**对称**的，不会偏袒某一方。 */
+  newGame() {
+    if (process.env.XQ_CLEAR_TT && this.XQ.resetSearch) this.XQ.resetSearch();
+    return Promise.resolve();
+  }
   /** 把 UCI 着法历史重放一遍，得到当前局面 —— 接口和 UCI 引擎保持一致 */
   sync(uciMoves) {
     this.board = this.XQ.parseBoard(this.XQ.START);
@@ -106,11 +150,17 @@ class JsEngine {
     // 早先这里直接用了调用方传的 side，而调用方没传 → undefined →
     // searchRoot 找不到任何着法，被误报成「引擎没有给出着法」。
     const toMove = side || (uciMoves.length % 2 === 0 ? 'r' : 'b');
+    /* --depth 走「深度上限」而不是时限。
+       早先这一行是 Math.max(1, limit.movetime || 300)，于是 --depth 被**静默忽略**：
+       你写 --depth 6，它其实按 300ms 跑，报出来的层数还随机器负载飘。
+       固定深度是「量剪枝质量」的唯一稳定口径（与机器负载无关），必须真的生效。
+       所以这里给一个长到用不完的 deadline，让 rootSearch 只被深度卡住。 */
+    const maxDepth = limit.depth > 0 ? limit.depth : 99;
+    const timeMs = limit.depth > 0 ? 3600000 : Math.max(1, limit.movetime || 300);
     // 第 6 个参数是着法历史：没有它，搜索不知道哪些局面已经出现过，
     // 优势时会把「绕圈」当成正分继续走。UCI 那边走的是 position+go 的历史，
     // 这里得自己把同一份东西喂进去，两边才可比。
-    const r = this.XQ.searchRoot(this.board, toMove, 99,
-                                 Math.max(1, limit.movetime || 300), null, this.idx);
+    const r = this.XQ.searchRoot(this.board, toMove, maxDepth, timeMs, null, this.idx);
     return { uci: r.move ? idxToUci(r.move[0]) + idxToUci(r.move[1]) : null,
              depth: r.depth, nodes: r.nodes };
   }
@@ -305,6 +355,238 @@ async function playGame(engines, cfg, gameIndex, opening, pairSeed) {
   return done({ winner: null, reason: `达到手数上限 ${cfg.maxPly}` });
 }
 
+/* ---------- 跑一局：串行 / 并行 / 续跑共用的唯一入口 ---------- */
+
+/**
+ * 第 g 局的起手局面**只由 g 决定**，与「这台机器上还跑着几局」无关。
+ * 这条性质是并行的前提：把局号丢给任意一个 worker，它都会摆出同一个局面。
+ * 成对设计（同一对里的两局共用局面、只交换执色）也依赖它 —— 种子只取对号。
+ */
+function openingFor(cfg, openings, g) {
+  const pair = Math.floor(g / 2);
+  return {
+    opening: openings[(pair + cfg.seed) % openings.length],
+    pairSeed: (cfg.seed + pair * 2654435761) >>> 0,
+    pair,
+  };
+}
+
+/** 一局的记录。写进 gamelog 的就是它 —— 字段名是续跑的约定，别随手改。 */
+function makeRec(r, g) {
+  return {
+    g: g + 1,
+    aIsRed: g % 2 === 0,
+    result: r.winner === 'a' ? 'a' : r.winner === 'b' ? 'b' : 'd',
+    reason: r.reason, ply: r.ply, prefix: r.prefix.join(' '),
+    dA: r.stats.a.depth, nA: r.stats.a.n,
+    dB: r.stats.b.depth, nB: r.stats.b.n,
+    broken: !!r.broken,
+  };
+}
+
+async function runOne(cfg, engines, openings, g) {
+  const { opening, pairSeed } = openingFor(cfg, openings, g);
+  await engines.a.newGame();
+  await engines.b.newGame();
+  const t0 = Date.now();
+  const r = await playGame(engines, cfg, g, opening, pairSeed);
+  return { rec: makeRec(r, g), ms: Date.now() - t0, labels: r.labels };
+}
+
+/** 一局跑完后那行「第 N 局（A 执红）：…」—— 串行和并行共用，格式不许两样 */
+function logGame(rec, ms, labels, cfg, prefix) {
+  const result = rec.result === 'a' ? 'A 胜' : rec.result === 'b' ? 'B 胜' : '和棋';
+  const avg = (d, n) => (n ? (d / n).toFixed(1) : '—');
+  console.log(`${prefix}第 ${String(rec.g).padStart(2)} 局（A 执${rec.aIsRed ? '红' : '黑'}）：`
+    + `${result}　${rec.reason}　${rec.ply} 手　`
+    + `层数 A ${avg(rec.dA, rec.nA)} / B ${avg(rec.dB, rec.nB)}`
+    + `　${(ms / 1000).toFixed(1)}s`);
+  if (cfg.verbose && labels && labels.length) {
+    const line = labels.map((l, i) => (i % 2 === 0 ? `${i / 2 + 1}. ` : '') + l).join('  ');
+    console.log('        ' + line);
+  }
+}
+
+/* ---------- 并行调度 ---------- */
+
+/**
+ * fork 出 `jobs` 个 worker，每个 worker 自己持有一对引擎，跑完一局回传记录。
+ *
+ * 三件必须守住的事：
+ *
+ *  1. **按局号顺序回调**。落盘要的是「从第 1 局起连续」的日志（loadGamelog 只认
+ *     连续前缀），所以这里用 buffer 把乱序完成的局缓存住，等前面的补齐了再按序
+ *     发出去。少了这一步，续跑会认不出自己跑过哪些局。
+ *  2. **worker 死掉要把局捡回来**。机器上跑 10 小时，OOM 或手动关窗口都会发生；
+ *     这时那一局既没落盘也没人跑，直接结束会静默少几局。重试一次，再失败就报错。
+ *  3. **worker 的 stdout 直接继承主进程**。它是重定向到 ab-result-*.txt 的，
+ *     继承才不会让 worker 里的告警（例如首着非法）丢在黑洞里。
+ */
+function runParallel(cfg, openings, games, resumeFrom, onRec) {
+  return new Promise((resolve, reject) => {
+    if (typeof fork !== 'function') {
+      return reject(new Error('当前 Node 不支持 child_process.fork，请用 --jobs 1'));
+    }
+    const todo = [];
+    for (let g = resumeFrom; g < games; g++) todo.push(g);
+    const jobs = Math.max(1, Math.min(cfg.jobs, todo.length));
+
+    let nextIdx = 0;
+    let nextWrite = resumeFrom;
+    let running = 0;
+    let attempts = {};          /* g -> 已尝试次数，用来给「重试一次」兜底 */
+    const buffer = new Map();   /* g -> {rec, ms, labels, wid} */
+    const assigned = new Map(); /* wid -> g */
+    const counts = new Array(jobs).fill(0);
+    let dead = false;
+
+    const flush = () => {
+      while (buffer.has(nextWrite)) {
+        const it = buffer.get(nextWrite);
+        buffer.delete(nextWrite);
+        counts[it.wid]++;
+        onRec(it);
+        nextWrite++;
+      }
+      if (!dead && nextWrite >= games) {
+        dead = true;
+        workers.forEach((w) => { try { w.kill(); } catch (e) { /* 已经退了 */ } });
+        const total = counts.reduce((x, y) => x + y, 0);
+        console.log(`  并行完成：${jobs} 个 worker，各跑 ${counts.join(' / ')} 局（合计 ${total}）`);
+        resolve();
+      }
+    };
+
+    const dispatch = (w, wid) => {
+      if (nextIdx >= todo.length) {
+        if (assigned.get(wid) === undefined) { try { w.kill(); } catch (e) { /* 略 */ } }
+        return;
+      }
+      const g = todo[nextIdx++];
+      assigned.set(wid, g);
+      w.send({ type: 'game', g });
+    };
+
+    /* 主进程被 Ctrl+C / 被 kill 掉时，**必须**把 worker 一起带走。
+       踩过的坑：调试时主进程被 SIGTERM 打断，那几个 worker 没人管，继续把手头
+       这一局跑完才退。表面上看「已经停了」，实际上它们还在满核跑 —— 于是紧接着
+       的每一次测量都在跟它们抢 CPU。实测同一批 4 局 40 手本该 2 秒，被污染时
+       跑 3 分钟还没完，而且**不报任何错**，只会让 Elo 悄悄变样。
+       测量台被污染的样子就是「数字变了但没人知道为什么」，所以这里必须硬杀。 */
+    const killAll = () => {
+      workers.forEach((w) => { try { w.kill(); } catch (e) { /* 已经退了 */ } });
+    };
+    process.on('SIGINT', () => {
+      console.error('\n  收到中断信号，正在结束 worker…');
+      killAll();
+      process.exit(130);
+    });
+    process.on('SIGTERM', () => { killAll(); process.exit(143); });
+
+    const workers = [];
+    for (let wid = 0; wid < jobs; wid++) {
+      const w = fork(__filename, ['--worker'], {
+        stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+        env: process.env,
+      });
+      w.wid = wid;
+      w.on('message', (m) => {
+        if (m.type === 'ready') {
+          console.log(`  worker ${wid} 就绪：A=${m.a}　B=${m.b}`);
+          dispatch(w, wid);
+          return;
+        }
+        if (m.type === 'done') {
+          const g = assigned.get(wid);
+          assigned.delete(wid);
+          if (m.g !== g) {
+            /* 必须**重新入队**。原来这里只是「丢弃」，结果是那一局再没人跑：
+               nextWrite 会永远等着它，flush 再也推不动，整个进程安安静静挂死。 */
+            console.error(`  ⚠️ worker ${wid} 回传的局号 ${m.g} 与派发的 ${g} 对不上，`
+              + `这一局改派给别人重跑`);
+            todo.push(g);
+          } else {
+            /* key 必须就是 g 本身 —— g 是**已经是 0-based** 的局号，和 nextWrite 同一
+               套尺度。（这里原来写成 g - 1，等于把「rec.g 是 1-based」记串了：第 1 局
+               被塞进 key=-1，而 flush 从 nextWrite=0 起扫，永远等不到它。
+               症状是「4 路跑 4 局，只落了 3 局，然后安静地卡住」，而且**三档并行度都
+               缺同一局**，所以横向比对时三份完全一致、看不出任何异常 ——
+               当时是靠「必须产出 4 局」这条断言才暴露的。） */
+            buffer.set(g, Object.assign({ wid }, m));
+            flush();
+          }
+          dispatch(w, wid);
+        }
+      });
+      w.on('exit', (code, signal) => {
+        const g = assigned.get(wid);
+        assigned.delete(wid);
+        if (g !== undefined) {
+          attempts[g] = (attempts[g] || 0) + 1;
+          if (attempts[g] > 2) {
+            dead = true;
+            workers.forEach((x) => { try { x.kill(); } catch (e) { /* 略 */ } });
+            return reject(new Error(`第 ${g + 1} 局连续 ${attempts[g]} 次没跑成`
+              + `（worker ${wid} 退出码 ${code}${signal ? '/' + signal : ''}）`));
+          }
+          console.error(`  ⚠️ worker ${wid} 在第 ${g + 1} 局中途退出（码 ${code}`
+            + `${signal ? '/' + signal : ''}），这一局改派给别人重跑`);
+          todo.push(g);          /* 捡回来，重新排队 */
+        }
+        running--;
+        if (running <= 0 && nextWrite < games) {
+          dead = true;
+          return reject(new Error(`所有 worker 都退出了，还有 ${games - nextWrite} 局没跑完`));
+        }
+      });
+      workers.push(w);
+    }
+    running = workers.length;
+    /* 开局集直接下发，worker 不重建 —— 重建会把它那句「开局同形被剔除」的
+       告警再喊一遍（主进程已经喊过了），而且两边算出来的必须逐位相同。 */
+    const init = { type: 'init', cfg, openings };
+    workers.forEach((w) => w.send(init));
+  });
+}
+
+/** worker 端：不解析参数、不打报告，只等着接局号、跑完回传。 */
+async function workerMain() {
+  const cfg = parseArgs();
+  let engines = null;
+  let openings = null;
+
+  /* 父进程没了就自己退。第二道保险 —— 主进程那边的 SIGINT/SIGTERM 已经会杀
+     我们，但如果主进程是被 SIGKILL 打掉的，那个处理器根本来不及跑。这时靠
+     IPC 通道断开这个信号自保。 */
+  process.on('disconnect', () => process.exit(0));
+
+  process.on('message', async (m) => {
+    if (m.type === 'init') {
+      Object.assign(cfg, m.cfg);
+      openings = m.openings;
+      try {
+        engines = { a: makeEngine(cfg.a), b: makeEngine(cfg.b) };
+        await engines.a.init();
+        await engines.b.init();
+        process.send({ type: 'ready', a: engines.a.name, b: engines.b.name });
+      } catch (e) {
+        console.error('worker 起引擎失败：' + (e && e.message));
+        process.exit(4);
+      }
+      return;
+    }
+    if (m.type === 'game') {
+      try {
+        const out = await runOne(cfg, engines, openings, m.g);
+        process.send({ type: 'done', g: m.g, rec: out.rec, ms: out.ms, labels: out.labels });
+      } catch (e) {
+        console.error(`worker 跑第 ${m.g + 1} 局时出错：` + (e && e.message));
+        process.exit(5);
+      }
+    }
+  });
+}
+
 /* ---------- Elo 与置信区间 ---------- */
 
 /** 胜率 → Elo 差。0 或 1 的时候算不出来（对数发散），这时只报胜率 */
@@ -436,6 +718,9 @@ function parseArgs() {
     seed: parseInt(get('seed', '1'), 10),
     gamelog: get('gamelog', null),
     fresh: a.includes('--fresh'),
+    jobs: parseInt(get('jobs', '1'), 10),
+    worker: a.includes('--worker'),
+    clearTt: a.includes('--clear-tt'),
     perft: parseInt(get('perft', '0'), 10),
     verbose: a.includes('--verbose'),
   };
@@ -487,6 +772,15 @@ async function main() {
   const cfg = parseArgs();
   const uciBin = path.join(__dirname, 'uci/build/xq-uci');
 
+  /* 被 fork 出来的 worker：不跑主流程，只等主进程派局号 */
+  if (cfg.worker) { await workerMain(); return; }
+
+  /* 置换表清不清，用环境变量交给引擎适配层。必须放在 worker 分支**之后** ——
+     否则 worker 进程会用自己那份「没有 --clear-tt」的 cfg 把父进程传下来的
+     开关删掉，于是主进程说要清、8 个 worker 各自不清，两边口径静默不一致。 */
+  if (cfg.clearTt) process.env.XQ_CLEAR_TT = '1';
+  else delete process.env.XQ_CLEAR_TT;
+
   if (cfg.perft > 0) { runPerft(cfg.perft); return; }
 
   // --ms-a/--ms-b 没给就都用 --ms
@@ -520,9 +814,15 @@ async function main() {
       msA: cfg.msA, msB: cfg.msB, openings: cfg.openings, openPlies: cfg.openPlies,
       randomPlies: cfg.randomPlies, seed: cfg.seed, maxPly: cfg.maxPly,
       a: cfg.a, b: cfg.b, fpA: specFingerprint(cfg.a), fpB: specFingerprint(cfg.b),
+      clearTt: cfg.clearTt ? 1 : 0,
     };
     if (log.header) {
-      const diff = Object.keys(fp).filter((k) => String(log.header[k]) !== String(fp[k]));
+      const diff = Object.keys(fp).filter((k) => {
+        /* clearTt 是后加的字段，老日志里没有它。本次也没清表（正是老日志的口径）
+           时不该因为这个新字段把人家已经跑掉的几千局判成「配置不一致」。 */
+        if (k === 'clearTt' && log.header[k] === undefined && !cfg.clearTt) return false;
+        return String(log.header[k]) !== String(fp[k]);
+      });
       if (diff.length) {
         console.error('  拒绝续跑：日志里的配置与本次不一致 ——');
         for (const k of diff) console.error(`    ${k}：日志 ${log.header[k]} / 本次 ${fp[k]}`);
@@ -559,6 +859,9 @@ async function main() {
   console.log(`  共 ${games} 局｜开局 ${openings.length} 组（各取前 ${cfg.openPlies} 手）`
     + (cfg.randomPlies > 0 ? ` + 之后各走 ${cfg.randomPlies} 手随机着法` : '')
     + `｜轮流执先｜手数上限 ${cfg.maxPly}`);
+  console.log(`  置换表：${cfg.clearTt
+    ? '每局清空（--clear-tt，逐位可复现）'
+    : '跨局保留（引擎本来的行为；要逐位可复现就加 --clear-tt）'}`);
   if (cfg.randomPlies === 0) {
     console.log(`  ⚠️  --random-plies 为 0：两局一对共用同一开局，实际不同的棋只有`
       + ` ${openings.length * 2} 盘，跑再多局也只是把它重放。`
@@ -566,12 +869,35 @@ async function main() {
   }
   console.log();
 
-  const engines = { a: makeEngine(cfg.a), b: makeEngine(cfg.b) };
-  await engines.a.init();
-  await engines.b.init();
-  console.log(`  A 实际引擎名：${engines.a.name}`);
-  console.log(`  B 实际引擎名：${engines.b.name}`);
-  console.log();
+  /* 并行只在「真有局要跑」时开 —— 局都跑完了（这次只是来汇总的）再 fork
+     一堆进程纯属浪费，那些 worker 领不到任务会立刻退出。 */
+  const todoCount = games - resumeFrom;
+  const parallel = cfg.jobs > 1 && todoCount > 1;
+  if (cfg.jobs > 1 && !parallel) {
+    console.log(`  提示：--jobs ${cfg.jobs} 本次不生效（只剩 ${todoCount} 局新局要跑）。`);
+  }
+  if (parallel) {
+    const cores = os.cpus().length;
+    const phys = Math.max(1, Math.floor(cores / 2));
+    console.log(`  并行 ${Math.min(cfg.jobs, todoCount)} 路，本机逻辑核 ${cores}`);
+    if (cfg.jobs > cores) {
+      console.log(`  ⚠️  已超过逻辑核数 ${cores}：引擎会互相抢 CPU，每手时限内到达的层数`
+        + `一起降低。比较仍算公平（双方同等受损），但别拿这次的层数当结论。`);
+    } else if (cfg.jobs > phys) {
+      console.log(`  注意：--jobs ${cfg.jobs} 用到了超线程（物理核约 ${phys}）。`
+        + `每个 worker 峰值占 1 核，想完全不互相打扰就用 --jobs ${phys}。`);
+    }
+  }
+
+  let engines = null;
+  if (!parallel) {
+    engines = { a: makeEngine(cfg.a), b: makeEngine(cfg.b) };
+    await engines.a.init();
+    await engines.b.init();
+    console.log(`  A 实际引擎名：${engines.a.name}`);
+    console.log(`  B 实际引擎名：${engines.b.name}`);
+    console.log();
+  }
 
   const perGame = [];
   const rows = [];
@@ -598,49 +924,33 @@ async function main() {
     sumD.b += rec.dB || 0; sumN.b += rec.nB || 0;
   };
 
-  for (let g = 0; g < games; g++) {
-    if (g < resumeFrom) { accum(doneGames[g]); continue; }
+  /* 续跑继承的局先补进统计 —— 它们不参与本次计时 */
+  for (let g = 0; g < resumeFrom; g++) accum(doneGames[g]);
 
-    const pair = Math.floor(g / 2);
-    const opening = openings[(pair + cfg.seed) % openings.length];
-    await engines.a.newGame();
-    await engines.b.newGame();
-    const started = Date.now();
-    const r = await playGame(engines, cfg, g, opening, (cfg.seed + pair * 2654435761) >>> 0);
-    elapsed += Date.now() - started;
-    starts.add(r.prefix.join(' '));
-
-    const aIsRed = g % 2 === 0;
-    const aColor = aIsRed ? '红' : '黑';
-    const result = r.winner === 'a' ? 'A 胜' : r.winner === 'b' ? 'B 胜' : '和棋';
-
+  /* 每跑完一局走这里。串行和并行两条路都只走这一个出口，
+     免得「并行版的统计口径和串行版不一样」这种最难查的错。 */
+  const onRec = (it) => {
+    const rec = it.rec;
     /* 先落盘、再打印。反过来的话，一次崩溃就可能出现
        「屏幕上看到了这局、日志里没有」—— 续跑时它会再下一遍，白等 30 秒。 */
-    const rec = {
-      g: g + 1, aIsRed, result: r.winner === 'a' ? 'a' : r.winner === 'b' ? 'b' : 'd',
-      reason: r.reason, ply: r.ply, prefix: r.prefix.join(' '),
-      dA: r.stats.a.depth, nA: r.stats.a.n,
-      dB: r.stats.b.depth, nB: r.stats.b.n,
-      broken: !!r.broken,
-    };
     if (glogFd !== null) {
       fs.writeSync(glogFd, JSON.stringify(rec) + '\n');
       fs.fsyncSync(glogFd);
     }
     accum(rec);
+    starts.add(rec.prefix);
+    elapsed += it.ms;
+    logGame(rec, it.ms, it.labels, cfg, it.wid === undefined ? '  ' : `  [w${it.wid}] `);
+  };
 
-    const avg = (s) => (s.n ? (s.depth / s.n).toFixed(1) : '—');
-    rows.push({
-      局: g + 1, A执: aColor, 结果: result, 结束原因: r.reason, 手数: r.ply,
-      'A平均层数': avg(r.stats.a), 'B平均层数': avg(r.stats.b),
-      用时: ((Date.now() - started) / 1000).toFixed(1) + 's',
-    });
-    console.log(`第 ${String(g + 1).padStart(2)} 局（A 执${aColor}）：${result}`
-      + `　${r.reason}　${r.ply} 手　`
-      + `层数 A ${avg(r.stats.a)} / B ${avg(r.stats.b)}`);
-    if (cfg.verbose && r.labels.length) {
-      const line = r.labels.map((l, i) => (i % 2 === 0 ? `${i / 2 + 1}. ` : '') + l).join('  ');
-      console.log('        ' + line);
+  if (parallel) {
+    console.log(`  并行 ${cfg.jobs} 路。（每个 worker 一行「就绪」；下面的日志按局号顺序打印，`
+      + `局号在前的先出现）`);
+    console.log();
+    await runParallel(cfg, openings, games, resumeFrom, onRec);
+  } else {
+    for (let g = resumeFrom; g < games; g++) {
+      onRec(await runOne(cfg, engines, openings, g));
     }
   }
   if (glogFd !== null) fs.closeSync(glogFd);
@@ -708,8 +1018,7 @@ async function main() {
   }
   console.log();
 
-  engines.a.quit();
-  engines.b.quit();
+  if (engines) { engines.a.quit(); engines.b.quit(); }
 }
 
 main().catch((e) => {

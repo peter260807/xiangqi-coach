@@ -46,6 +46,14 @@ set MS=300
 set OPENINGS=8
 set OPENPLIES=8
 set RANDOMPLIES=4
+
+REM Parallel games. Each worker runs one game at a time and peaks at one core,
+REM so one worker per PHYSICAL core is the sweet spot. NUMBER_OF_PROCESSORS
+REM counts logical processors, so halve it. Going above that makes the engines
+REM fight for CPU: the reported depths drop for both sides equally, which is
+REM still fair, but it stops being a clean measurement.
+set /a JOBS=%NUMBER_OF_PROCESSORS%/2
+if %JOBS% LSS 2 set JOBS=2
 REM -----------------------------------------------------
 
 if "%MODE%"=="" set MODE=all
@@ -119,18 +127,23 @@ echo.
 echo   %MS% ms per move ^| %GAMES% games ^| %OPENINGS% openings x %OPENPLIES% plies
 echo   plus %RANDOMPLIES% random plies per pair  ^|  colors alternate
 echo.
+echo   Running %JOBS% games in parallel. Each game is independent, so this
+echo   divides the wall-clock time by roughly %JOBS%.
+echo   If the reported depths look lower than usual, lower JOBS in this file.
+echo.
 echo   Each pair of games starts from the SAME position and swaps colors.
 echo   Different pairs start from different positions.
 echo.
-echo   Estimated 8-11 hours. If it gets interrupted, just run this again:
-echo   it resumes from the last finished game.
+echo   Divides the work across %JOBS% parallel workers. If it gets interrupted,
+echo   just run this again: it resumes from the last finished game -- the
+echo   parallel version writes the same progress file, so old progress counts.
 echo ============================================================
 echo.
 echo Engine file fingerprints, sha256 first 16 chars:
 node -e "const c=require('crypto'),f=require('fs');for(const p of ['web/js/engine.js','baseline/engine.js']){console.log('  '+p+'  '+c.createHash('sha256').update(f.readFileSync(p)).digest('hex').slice(0,16));}"
 echo.
 
-node tools/match.js --a js --b js:baseline/engine.js --ms %MS% --games %GAMES% --openings %OPENINGS% --open-plies %OPENPLIES% --random-plies %RANDOMPLIES% --gamelog ab-progress-%MODE%.jsonl %EXTRA% > ab-result-%MODE%.txt 2>&1
+node tools/match.js --a js --b js:baseline/engine.js --ms %MS% --games %GAMES% --openings %OPENINGS% --open-plies %OPENPLIES% --random-plies %RANDOMPLIES% --jobs %JOBS% --gamelog ab-progress-%MODE%.jsonl %EXTRA% > ab-result-%MODE%.txt 2>&1
 
 if errorlevel 3 goto bad_resume
 if errorlevel 1 goto run_failed
