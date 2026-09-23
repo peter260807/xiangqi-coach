@@ -65,6 +65,14 @@ function check(fen) {
       if (t === 'k' && !inPalace(r, c, red)) {
         problems.push(side + '的将不在九宫：(' + r + ',' + c + ')');
       }
+      /* 兵/卒永远不后退：黑卒从第 3 行起步只会往下（行号增大）→ 只能在 3~9 行；
+         红兵从第 6 行起步只会往上 → 只能在 0~6 行。
+         踩过：一开始漏了这条，于是「黑卒站在自己底线」这种局面被放过去了，
+         直到 Pikafish 报 `BLACK pawn(s) on invalid positions` 才发现。 */
+      if (t === 'p') {
+        if (!red && r < 3) problems.push('黑卒不可能在第 ' + r + ' 行（应在 3~9 行）');
+        if (red && r > 6) problems.push('红兵不可能在第 ' + r + ' 行（应在 0~6 行）');
+      }
     }
   }
   for (const side of ['red', 'black']) {

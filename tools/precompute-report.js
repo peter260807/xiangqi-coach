@@ -136,6 +136,43 @@ if (!baseLosses.length) {
 }
 
 console.log('');
+console.log('=== 配对比较（同一批局面逐对看，比均值可靠）===');
+console.log('    均值会被少数极端局面主导；这里看「有多少局面变好了」+ 中位改善 + 符号检验。');
+/* 标准正态 CDF（Abramowitz-Stegun 7.1.26）—— 只为符号检验的 p 值，够用 */
+function normCdf(x) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(x));
+  const d = 0.3989423 * Math.exp(-x * x / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return x > 0 ? 1 - p : p;
+}
+for (const d of ds) {
+  if (d === appDepth) continue;
+  const deltas = [];
+  for (const r of withOurs) {
+    const a = lossOf(r, appDepth);
+    const b = lossOf(r, d);
+    if (a === null || b === null) continue;
+    deltas.push(a - b);                       // >0 = d 更好
+  }
+  if (deltas.length < 10) { console.log('  d' + pads(d, 3) + ' 有效配对不足（' + deltas.length + '），跳过'); continue; }
+  const better = deltas.filter((x) => x > 0).length;
+  const worse = deltas.filter((x) => x < 0).length;
+  const tie = deltas.filter((x) => x === 0).length;
+  const sorted = deltas.slice().sort((x, y) => x - y);
+  const med = sorted[sorted.length >> 1];
+  const n = better + worse;
+  const z = n ? (better - n / 2) / Math.sqrt(n / 4) : 0;
+  const pv = n ? 2 * (1 - normCdf(Math.abs(z))) : 1;
+  console.log('  d' + pads(d, 3) + ' vs d' + appDepth + '  ' + pads(deltas.length + ' 对', 9)
+    + '更好 ' + pads(better, 4) + ' 更差 ' + pads(worse, 4) + ' 相同 ' + pads(tie, 4)
+    + '  中位改善 ' + pads(med.toFixed(1), 7) + ' 分'
+    + '  符号检验 p = ' + pv.toFixed(4) + (pv < 0.05 ? '  ✅' : '  （不显著）'));
+}
+console.log('');
+console.log('  读法：**「更好 / 更差」的对比比均值重要**。若「更差」接近一半，');
+console.log('        说明均值改善其实来自少数极端局面，不是普遍变准。');
+
+console.log('');
 console.log('=== 每个深度的中位丢分 / 一致率（更能代表"用户感受到的"）===');
 for (const d of ds) {
   const v = withOurs.map((r) => ({ loss: lossOf(r, d), same: r.ours && r.ours[d] && r.ours[d].sameAsRef }))

@@ -415,7 +415,7 @@ async function runJudge(cfg) {
   if (!cfg.input) throw new Error('judge 模式需要 --in <分析结果.jsonl>');
   const lines = fs.readFileSync(cfg.input, 'utf8').split('\n').filter((l) => l.trim());
   const [si, sn] = (cfg.shard || '0/1').split('/').map(Number);
-  const judge = makeJudge(cfg);
+  let judge = makeJudge(cfg);
   await judge.init();
   const sink = new Sink(cfg.out, cfg.fresh);
   let did = 0, skipped = 0;
@@ -426,20 +426,31 @@ async function runJudge(cfg) {
     try { rec = JSON.parse(lines[i]); } catch (e) { continue; }
     if (sink.has(rec.key)) { skipped++; continue; }
     if (rec.ref) { sink.write(rec); continue; }          // 已经判过
-    const refT = Date.now();
-    const ref = await judge.analyze(rec.fen, cfg.refDepth, 1);
-    rec.ref = { move: ref.best, score: ref.score, depth: ref.depth, ms: Date.now() - refT };
-    const parts = rec.fen.split(' ');
-    for (const d of Object.keys(rec.ours || {})) {
-      const o = rec.ours[d];
-      if (!o || !o.move || !/^[a-i][0-9][a-i][0-9]$/.test(o.move)) continue;
-      const b = XQ.parseBoard(parts[0]);
-      const side = parts[1] === 'b' ? 'b' : 'r';
-      XQ.makeMove(b, fromUci(o.move));
-      const after = await judge.analyze(XQ.boardToString(b) + ' ' + XQ.other(side), cfg.refDepth, 1);
-      o.judged = -after.score;
-      o.sameAsRef = o.move === ref.best;
-      o.loss = ref.score - o.judged;
+    /* 同样要逐条包 try：裁判会因为「局面非法」自杀，一个坏局面不能废掉整批。
+       （quality 模式里加了这层，judge 模式一开始漏了 —— 实测整批 600 条被一个非法局面
+       直接终止在 12 个 worker 全部退出码 1。） */
+    try {
+      const refT = Date.now();
+      const ref = await judge.analyze(rec.fen, cfg.refDepth, 1);
+      rec.ref = { move: ref.best, score: ref.score, depth: ref.depth, ms: Date.now() - refT };
+      const parts = rec.fen.split(' ');
+      for (const d of Object.keys(rec.ours || {})) {
+        const o = rec.ours[d];
+        if (!o || !o.move || !/^[a-i][0-9][a-i][0-9]$/.test(o.move)) continue;
+        const b = XQ.parseBoard(parts[0]);
+        const side = parts[1] === 'b' ? 'b' : 'r';
+        XQ.makeMove(b, fromUci(o.move));
+        const after = await judge.analyze(XQ.boardToString(b) + ' ' + XQ.other(side), cfg.refDepth, 1);
+        o.judged = -after.score;
+        o.sameAsRef = o.move === ref.best;
+        o.loss = ref.score - o.judged;
+      }
+    } catch (e) {
+      rec.error = (rec.error ? rec.error + ' / ' : '') + e.message;
+      process.stderr.write('[judge ' + si + '] ' + String(rec.tag || rec.key).slice(0, 30)
+        + ' 出错：' + e.message.slice(0, 110) + '\n');
+      try { judge.quit(); } catch (x) { /* */ }
+      try { judge = makeJudge(cfg); await judge.init(); } catch (x) { /* */ }
     }
     sink.write(rec);
     did++;
