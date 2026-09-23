@@ -148,11 +148,15 @@ def build_normal_equations(compact, idxs, mode, chunk):
     改成桶内索引后 A 只有 9 x 1261^2 = 1430 万个元素（114 MB），
     同样 400 个局面 1.5 秒跑完。
     """
-    LOCAL = F.PST_FEATURE_DIM            # 1260：桶内维度
+    # 桶内维度。**不能写死 PST_FEATURE_DIM 1260** —— mob 模式在骨架之后还有
+    # 一段机动性。feature_dim(mode) // num_buckets(mode) 对四种老编码都等于 1260，
+    # 对 mob（只有 1 个桶）等于 1292，正是要的值。
+    LOCAL = F.feature_dim(mode) // F.num_buckets(mode)
     Deff = LOCAL + 1                     # 末尾加一列截距
     K = F.num_buckets(mode)              # pst=1, halfka=9, fullka=81
     pad = F.pad_index(mode)
     Q = Deff * Deff
+    N1 = F.max_features(mode) + 1        # 槽位 0 是截距，其余是特征槽
 
     A = np.zeros((K, Deff, Deff), dtype=np.float64)
     b = np.zeros((K, Deff), dtype=np.float64)
@@ -171,15 +175,16 @@ def build_normal_equations(compact, idxs, mode, chunk):
                 fk, yk = f[sel], y[sel]
             n = len(fk)
 
-            # 槽位 0 是截距；槽位 1..32 是棋子，补齐位标记为无效
-            valid = np.ones((n, 33), dtype=bool)
+            # 槽位 0 是截距；槽位 1.. 是特征（mob 模式会多出机动性那两列），
+            # 补齐位标记为无效。槽位数按 mode 走，别写死 33。
+            valid = np.ones((n, N1), dtype=bool)
             valid[:, 1:] = (fk != pad)
-            key = np.zeros((n, 33), dtype=np.int64)
+            key = np.zeros((n, N1), dtype=np.int64)
             key[:, 0] = LOCAL
             # 换算到桶内局部索引（pst 的 k 恒为 0，等价于不变）
             key[:, 1:] = np.where(valid[:, 1:], fk - k * LOCAL, 0)
 
-            for i in range(33):
+            for i in range(N1):
                 vi = valid[:, i]
                 if not vi.any():
                     continue
@@ -187,7 +192,7 @@ def build_normal_equations(compact, idxs, mode, chunk):
                 # ---- b += x * y ----
                 b[k] += np.bincount(ki[vi], weights=yk[vi], minlength=Deff)
                 # ---- A += x x^T（只看 i <= j 的无序对，i < j 时补转置） ----
-                for j in range(i, 33):
+                for j in range(i, N1):
                     mj = vi & valid[:, j]
                     if not mj.any():
                         continue
@@ -234,7 +239,8 @@ def solve(A, b, lam):
 
 
 def predict(compact, idxs, mode, W, chunk):
-    LOCAL = F.PST_FEATURE_DIM
+    LOCAL = F.feature_dim(mode) // F.num_buckets(mode)      # 桶内维度（mob 含机动性段）
+    N1 = F.max_features(mode)
     pad = F.pad_index(mode)
     out = np.empty(len(idxs), dtype=np.float64)
     for s in range(0, len(idxs), chunk):
@@ -242,7 +248,7 @@ def predict(compact, idxs, mode, W, chunk):
         f, bucket, _ = _pieces(compact, sub, mode)
         p = W[bucket, LOCAL].copy()                        # 截距
         base = bucket * LOCAL                              # 全局索引 -> 桶内索引
-        for i in range(32):
+        for i in range(N1):
             vi = f[:, i] != pad
             if vi.any():
                 p[vi] += W[bucket[vi], f[vi, i] - base[vi]]
@@ -304,8 +310,9 @@ def main():
     ap.add_argument('--seed', type=int, default=20260921)
     args = ap.parse_args()
 
-    # 默认不跑 fullka：81 个桶的正规方程要 ~12 分钟，需要时用 --mode fullka 显式跑
-    modes = (('pst', 'halfka', 'halfka_rand') if args.mode == 'all'
+    # 默认不跑 fullka：81 个桶的正规方程要 ~12 分钟，需要时用 --mode fullka 显式跑。
+    # mob / rel 必须放进默认组 —— 它们就是这一轮要验证的对象，漏了对比表等于白跑。
+    modes = (('pst', 'halfka', 'halfka_rand', 'mob', 'rel') if args.mode == 'all'
              else (args.mode,))
 
     t0 = time.time()
