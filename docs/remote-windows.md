@@ -178,14 +178,32 @@ Windows 上 `Get-Service sshd` 看服务起没起；没起就 `Start-Service ssh
 防火墙那条规则没加，或者 IP 变了（路由器换了 DHCP 租约）。先在 Windows 上
 `ipconfig` 确认 IP。
 
-**连上之后中文乱码**
-Windows 的默认代码页是 GBK。执行命令前先切一下：
+**中文乱码 —— 两个方向都会出问题，症状完全不同**
+
+*输出方向*（好认）：Windows 默认代码页是 GBK，PowerShell 返回的中文在 Mac 上是乱码。
 
 ```powershell
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 ```
 
-`tools/win.sh` 里的命令都不含中文输出，所以不受影响；你自己随手发命令时可能需要。
+还有一条容易漏：`Get-Content` 读 UTF-8 文件（比如对局报告 `ab-result-all.txt`）必须显式加
+`-Encoding UTF8`，否则「将死」会显示成「灏嗘」。`tools/win.sh` 已经把这两条都内置了。
+
+*输入方向*（难查）：**命令里只要带中文路径就会被弄坏**。ssh 传的是 UTF-8 字节，Windows 侧
+按 ANSI(GBK) 解 —— `D:\象棋` 就变成了别的字节序列。它的失败方式很坑：**不报「找不到」，
+也不报权限**，只给你一堆空结果，或者悄悄把文件写到别的地方去。
+
+解法是别把命令拼进命令行，改用 `-EncodedCommand`（UTF-16LE，整层绕开编码转换）：
+
+```bash
+b64=$(printf '%s' "你的 PowerShell 命令" | python3 -c 'import sys,base64; print(base64.b64encode(sys.stdin.read().encode("utf-16-le")).decode())')
+ssh win "powershell -NoProfile -OutputFormat Text -EncodedCommand $b64"
+```
+
+`tools/win.sh` 里所有命令都是这么走的，所以你不用自己拼。
+
+顺带说 `-OutputFormat Text`：它能压掉 PowerShell 在 SSH 下默认吐的 CLIXML 尾巴。不加的话
+报错和 progress 会混成一大坨 `<Objs ...>` XML，真正的输出反而被冲掉。
 
 **想改默认 shell 成 PowerShell（可选）**
 `tools/win.sh` 已经对每条命令显式指定了解释器，所以**这一步不做也没关系**。
@@ -197,7 +215,37 @@ New-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell -Value 'C:\Wi
 
 ---
 
-## 六、连上之后最常用的三件事
+## 六、⚠️ 启动长任务：必须脱离 sshd 的 Job Object
+
+**这是最容易踩、也最难查的一个坑。**
+
+Windows 的 sshd 会把会话里创建的进程放进一个 **Job Object**，**会话一结束就把整棵进程树收走**。
+
+症状长这样：你启动了一个要跑一小时的任务，日志显示它正常起来了、worker 也都就绪了，
+然后**戛然而止** —— 没有异常、没有报错、退出码都没有，日志就停在某一刻。
+看起来像「程序自己崩了」，实际上是**被外面杀掉的**。
+
+本次实测：`Start-Process` 起对局台，8 个 worker 全部打印了就绪，然后全部消失；
+同一个会话里起的 curl 下载也在断线后停住。
+
+**正确做法是用 WMI 创建进程** —— 这种进程的父进程是 `WmiPrvSE.exe`，不在 sshd 的 job 里：
+
+```powershell
+$cmdLine = 'cmd.exe /c D:\象棋\tools\ab-package\run-ab.bat all'
+$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmdLine }
+Write-Output $r.ProcessId
+```
+
+`ReturnValue=0` 表示创建成功。**验证方法是断开再重连**（每跑一条 ssh 命令就是一个新会话），
+看进程还在不在、CPU 还在不在涨 —— 别只看「它起来了」。
+
+其他可行的办法：`schtasks /create ... /run`（任务计划程序启动的进程同样不受会话影响）。
+
+**别用**：`Start-Process`（在 job 里）、`nohup` / `&`（Windows 上不存在这个机制）。
+
+---
+
+## 七、连上之后最常用的三件事
 
 ```bash
 # 1. 看长任务跑到哪了
