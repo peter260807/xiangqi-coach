@@ -6,11 +6,16 @@ REM  A = new      (web/js/engine.js)
 REM  B = baseline (baseline/engine.js, i.e. git HEAD)
 REM
 REM  Usage:
-REM     run-ab.bat            safe mode  (default)
-REM     run-ab.bat full       full pruning mode
+REM     run-ab.bat            all mode   (default) = what we intend to ship
+REM     run-ab.bat perp       long-check fix only
 REM
-REM  safe : A = long-check fix only (LMR / null-move disabled)
-REM  full : A = long-check fix + LMR + null-move pruning
+REM  all  : A = long-check fix + LMR + null-move pruning
+REM         (a 40-game run measured +158 Elo, CI [+64,+251], so this is
+REM          the configuration we want to ship; this run is its confirmation)
+REM  perp : A = long-check fix only (LMR / null-move forced OFF)
+REM         isolates the long-check fix from the pruning
+REM
+REM  "full" is accepted as a synonym of all, "safe" as a synonym of perp.
 REM
 REM  Result is written to ab-result-<mode>.txt -- please send it back.
 REM
@@ -36,7 +41,7 @@ if errorlevel 1 (
 )
 
 set MODE=%1
-if "%MODE%"=="" set MODE=safe
+if "%MODE%"=="" set MODE=all
 
 set GAMES=1200
 set MS=300
@@ -44,29 +49,31 @@ set OPENINGS=8
 set OPENPLIES=8
 set RANDOMPLIES=4
 
-if /i "%MODE%"=="full" goto mode_full
-if /i "%MODE%"=="safe" goto mode_safe
+if /i "%MODE%"=="all"  goto mode_all
+if /i "%MODE%"=="full" goto mode_all
+if /i "%MODE%"=="perp" goto mode_perp
+if /i "%MODE%"=="safe" goto mode_perp
 echo.
-echo  [ERROR] unknown mode "%MODE%".  Use:  run-ab.bat  or  run-ab.bat full
+echo  [ERROR] unknown mode "%MODE%".  Use:  run-ab.bat  or  run-ab.bat perp
 echo.
 pause
 exit /b 2
 
-:mode_full
+:mode_all
 set MODE_DESC=long-check fix + LMR + null-move pruning
-REM Pruning is OFF by default in engine.js (not yet proven by a large A/B),
-REM so this mode has to switch it ON explicitly. Without these two lines
-REM "full" would silently be identical to "safe".
+REM Pruning is ON by default in engine.js, so these two lines are redundant
+REM today -- but they are written out on purpose: an explicit positive switch
+REM cannot be broken by a future change of the default. (We already got bitten
+REM once by relying on the default: the "full" branch forgot to set anything,
+REM so it silently ran identical to "safe" while still reporting "finished".)
 set XQ_LMR=1
 set XQ_NULL=1
 goto go
 
-:mode_safe
-set MODE_DESC=long-check fix only (pruning OFF)
-REM Redundant today (pruning is already off by default) but written out on
-REM purpose: if the default is ever flipped after a positive A/B, this mode
-REM must still mean "no pruning". Both engines read the same env, but the
-REM baseline has no pruning code at all, so it is unaffected either way.
+:mode_perp
+set MODE_DESC=long-check fix only (pruning forced OFF)
+REM Both engines read the same env, but the baseline has no pruning code at
+REM all, so turning it off only affects A. That is exactly what we want here.
 set XQ_NO_LMR=1
 set XQ_NO_NULL=1
 goto go

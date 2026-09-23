@@ -88,28 +88,25 @@ final class Engine {
     /// 是为了**便于归因**：出问题时只需怀疑一个参数，而不是两处联动。
     static let nullMoveR = 2
 
-    /// 归因开关（用环境变量控制，便于用同一个二进制跑所有变体）。
+    /// 归因开关（环境变量控制，便于用同一个二进制跑所有变体）。
     ///
-    /// **LMR 与空着裁剪默认是关的** —— 它们在 40 局 A/B 里还没证明自己
-    /// （得分率 47.5%、Elo −17、区间 [−118,+83] 跨 0，虽然深度 +2.5 层）。
-    /// 未验证的行为改动不该默认在 App 里生效：宁可先留着开关，
-    /// 等大样本 A/B 给出正证据再翻默认值。
+    /// **两者默认开启。** 依据是一次只有环境变量之差的对局（同一个二进制，
+    /// A 开剪枝 / B 关剪枝，两边都含长将修复）：40 局 **71.3% 得分率、
+    /// Elo +158、区间 [+64,+251] 不含 0**，平均层数 +2.72（9.32 vs 6.60）。
     ///
-    ///   `XQ_LMR=1`    打开 LMR
-    ///   `XQ_NULL=1`   打开空着裁剪
-    ///   `XQ_NO_LMR=1` / `XQ_NO_NULL=1`  强制关闭（优先级更高，防止将来翻默认值时
-    ///                 旧脚本的语义静默反转）
+    ///   `XQ_NO_LMR=1`   关掉 LMR
+    ///   `XQ_NO_NULL=1`  关掉空着裁剪
+    ///   `XQ_LMR=1` / `XQ_NULL=1`  显式「打开」，纯为兼容脚本 ——
+    ///     脚本里写正向开关比依赖「默认是什么」更难出错
+    ///     （踩过：一键脚本的 full 分支漏设变量，于是与 safe 跑出完全一样的结果，
+    ///      而脚本照样报「完成」）
     ///
-    /// 长将判负是**已验证**的（机制有确定性验证 + 40 局 A/B 得分率 58.8%），
-    /// 所以默认开启，只留 `XQ_NO_PERPETUAL=1` 用于归因对照。
-    private static func flag(_ on: String, _ off: String) -> Bool {
-        let env = ProcessInfo.processInfo.environment
-        if env[off] != nil { return false }
-        return env[on] != nil
-    }
-
-    static let lmrEnabled = flag("XQ_LMR", "XQ_NO_LMR")
-    static let nullMoveEnabled = flag("XQ_NULL", "XQ_NO_NULL")
+    /// ⚠️ 2026-09-23 这里犯过一次大的：LMR 的「缩减后重搜」用的是零窗口
+    /// （`(-alpha-1, -alpha)`）而不是全窗口，于是返回的只是下界却被当成精确分 ——
+    /// 同一批 40 局 A/B 从 **71.3% 掉到 47.5%**（Elo −17、区间跨 0），
+    /// 差一点把 LMR 判成「没用」。修好后收益才显出来。
+    static let lmrEnabled = ProcessInfo.processInfo.environment["XQ_NO_LMR"] == nil
+    static let nullMoveEnabled = ProcessInfo.processInfo.environment["XQ_NO_NULL"] == nil
     static let perpetualEnabled = ProcessInfo.processInfo.environment["XQ_NO_PERPETUAL"] == nil
 
     private let queue = DispatchQueue(label: "com.peter260807.xiangqi.engine", qos: .userInitiated)

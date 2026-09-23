@@ -49,22 +49,24 @@
      剪枝都是**近似**，A/B 变差时必须能「只关一个」来定位是哪一项干的 ——
      否则每改一次都要重跑全套，时间全耗在换编译上。 */
   var HAS_ENV = (typeof process !== 'undefined' && !!process.env);
-  /* **LMR 与空着裁剪默认是关的** —— 它们在 40 局 A/B 里还没证明自己
-     （得分率 47.5%、Elo −17、区间 [−118,+83] 跨 0，虽然深度 +2.5 层）。
-     未验证的行为改动不该默认生效：宁可先留着开关，等大样本 A/B 有正证据再翻默认值。
-       XQ_LMR=1 / XQ_NULL=1          打开
-       XQ_NO_LMR=1 / XQ_NO_NULL=1    强制关闭（优先级更高，防止将来翻默认值时
-                                     旧脚本的语义静默反转）
-     （浏览器里没有 process：剪枝一律关闭、长将判负开启，与 iOS 侧默认一致。） */
-  function envFlag(on, off) {
-    if (!HAS_ENV) return false;
-    if (process.env[off]) return false;
-    return !!process.env[on];
-  }
-  var LMR_ENABLED = envFlag('XQ_LMR', 'XQ_NO_LMR');
-  var NULL_MOVE_ENABLED = envFlag('XQ_NULL', 'XQ_NO_NULL');
-  /* 长将判负是**已验证**的（确定性验证 + 40 局 A/B 得分率 58.8%），默认开启，
-     只留开关用于归因对照 */
+  /* 剪枝开关：**默认开启**（`XQ_NO_LMR` / `XQ_NO_NULL` 可关）。
+
+     依据是一次只有环境变量之差的对局（同一个二进制，A 开剪枝 / B 关剪枝，
+     两边都含长将修复）：40 局 **71.3% 得分率、Elo +158、区间 [+64,+251] 不含 0**，
+     平均层数 +2.72（9.32 vs 6.60）。
+
+     `XQ_LMR=1` / `XQ_NULL=1` 是显式「打开」，纯为兼容脚本 —— 脚本里写正向开关
+     比依赖「默认是什么」更难出错（踩过：一键脚本的 full 分支漏设变量，
+     于是与 safe 跑出完全一样的结果，而脚本照样报「完成」）。
+
+     ⚠️ 2026-09-23 这里犯过一次大的：LMR 的「缩减后重搜」用的是零窗口
+     （`(-alpha-1, -alpha)`）而不是全窗口，返回的只是下界却被当成精确分 ——
+     同一批 40 局 A/B 从 **71.3% 掉到 47.5%**（Elo −17、区间跨 0），
+     差一点把 LMR 判成「没用」。
+
+     （浏览器里没有 process：剪枝开启、长将判负开启，与 iOS 侧默认一致。） */
+  var LMR_ENABLED = !(HAS_ENV && process.env.XQ_NO_LMR);
+  var NULL_MOVE_ENABLED = !(HAS_ENV && process.env.XQ_NO_NULL);
   var PERPETUAL_ENABLED = !(HAS_ENV && process.env.XQ_NO_PERPETUAL);
   /* 搜索窗口哨兵必须是有穷值：用 Infinity 会让空窗口退化成 (∞, ∞) 并污染置换表 */
   var INF = 1000000000;
