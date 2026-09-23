@@ -105,8 +105,10 @@ final class Engine {
     /// （`(-alpha-1, -alpha)`）而不是全窗口，于是返回的只是下界却被当成精确分 ——
     /// 同一批 40 局 A/B 从 **71.3% 掉到 47.5%**（Elo −17、区间跨 0），
     /// 差一点把 LMR 判成「没用」。修好后收益才显出来。
-    static let lmrEnabled = ProcessInfo.processInfo.environment["XQ_NO_LMR"] == nil
-    static let nullMoveEnabled = ProcessInfo.processInfo.environment["XQ_NO_NULL"] == nil
+    /// ⚠️ 写成 `var` 而不是 `let`：单元测试里要临时关掉它们来验「排序不改分」
+    /// （那条硬约束只在**搜索精确**时成立，见 OrderingTests 第 6 节）。
+    static var lmrEnabled = ProcessInfo.processInfo.environment["XQ_NO_LMR"] == nil
+    static var nullMoveEnabled = ProcessInfo.processInfo.environment["XQ_NO_NULL"] == nil
     static let perpetualEnabled = ProcessInfo.processInfo.environment["XQ_NO_PERPETUAL"] == nil
 
     private let queue = DispatchQueue(label: "com.peter260807.xiangqi.engine", qos: .userInitiated)

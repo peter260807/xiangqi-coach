@@ -317,7 +317,17 @@ final class OrderingTests: XCTestCase {
     ///
     /// 这三个参考值是**改排序之前**的引擎跑出来的，JS 侧 `tools/test-order.js`
     /// 用的是同一批数字 —— 两端引擎在这里必须给出同一个答案。
+    ///
+    /// ⚠️ **必须在关掉近似剪枝的前提下测。** 上面那条「分数与顺序无关」只在
+    /// **搜索本身精确**时成立，而 LMR / 空着裁剪是按设计就会改变分数的**近似**剪枝。
+    /// 开着它们断言「分数必须一模一样」，验的就不是排序了 —— 断言会在动剪枝时无故变红，
+    /// 让人误以为排序被改坏。（2026-09-23 把剪枝改成默认开启后就撞到了这一点。）
     func testSearchScoreIsUnchangedByOrdering() {
+        let savedLMR = Engine.lmrEnabled, savedNull = Engine.nullMoveEnabled
+        Engine.lmrEnabled = false
+        Engine.nullMoveEnabled = false
+        defer { Engine.lmrEnabled = savedLMR; Engine.nullMoveEnabled = savedNull }
+
         let cases: [(String, [Int8], Int32)] = [
             ("标准开局", Rules.parse(Rules.startFEN), 8),
             ("中局", Rules.parse("r.nbakar./........./.cn...n.c/p.p.p...p/......p.."
@@ -331,5 +341,25 @@ final class OrderingTests: XCTestCase {
             XCTAssertEqual(r.score, expected,
                            "\(name) 深度 4 的分数与改排序之前必须完全相同（现在 \(r.score) / 参考 \(expected)）")
         }
+    }
+
+    /// 剪枝的默认值本身也要钉住：它现在是**开**的（40 局 A/B 得分率 71.3%、Elo +158、
+    /// 区间 [+64,+251] 不含 0），而且环境变量里的 `XQ_NO_*` 能关掉它。
+    /// 这条断言的作用是：以后有人翻默认值时会立刻看到这里，而不是让差异悄悄进发布包。
+    func testPruningDefaults() {
+        let env = ProcessInfo.processInfo.environment
+        if env["XQ_NO_LMR"] == nil {
+            XCTAssertTrue(Engine.lmrEnabled,
+                          "LMR 默认应为开启（可用 XQ_NO_LMR=1 关掉）")
+        } else {
+            XCTAssertFalse(Engine.lmrEnabled, "设了 XQ_NO_LMR 时 LMR 必须关掉")
+        }
+        if env["XQ_NO_NULL"] == nil {
+            XCTAssertTrue(Engine.nullMoveEnabled,
+                          "空着裁剪默认应为开启（可用 XQ_NO_NULL=1 关掉）")
+        } else {
+            XCTAssertFalse(Engine.nullMoveEnabled, "设了 XQ_NO_NULL 时空着裁剪必须关掉")
+        }
+        XCTAssertTrue(Engine.perpetualEnabled, "长将判负默认应为开启")
     }
 }
