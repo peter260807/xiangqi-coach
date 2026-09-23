@@ -97,6 +97,28 @@ devices_of_profile() {
   rm -f "$tmp"
 }
 
+# 生成时间（epoch 秒）。用来在「同名候选有多份」时选**最新**的那一份。
+pp_epoch() {
+  local tmp
+  tmp="$(decode_profile "$1")" || { echo 0; return; }
+  # plist 里的日期是 **UTC**，而 plistlib 解出来的是 naive datetime。
+  # 直接 .timestamp() 会按本地时区解释，显示时间差 8 小时（排序不受影响，但看日志会误判）。
+  /usr/bin/python3 - "$tmp" <<'PY' 2>/dev/null || echo 0
+import plistlib, sys
+from datetime import timezone
+with open(sys.argv[1], 'rb') as f:
+    d = plistlib.load(f)
+c = d.get('CreationDate')
+print(int(c.replace(tzinfo=timezone.utc).timestamp()) if c else 0)
+PY
+  rm -f "$tmp"
+}
+
+# 一份描述文件「重新生成」后**名字不变**，只有 UUID 变 —— 所以导出时不能只给名字。
+profile_uuid() {
+  pp_field "$1" UUID
+}
+
 # 描述文件会落在**两个**位置，两处都得扫：
 #   用户手动安装的      -> ~/Library/MobileDevice/Provisioning Profiles/
 #   Xcode 托管/同步来的 -> ~/Library/Developer/Xcode/UserData/Provisioning Profiles/
@@ -129,33 +151,81 @@ if [ -f "$ADHOC_PLIST" ]; then
   PROFILE_NAME="$(/usr/libexec/PlistBuddy -c "Print :provisioningProfiles:$BUNDLE_ID" "$ADHOC_PLIST" 2>/dev/null)"
 fi
 
-# 已安装的 .mobileprovision
+# 已安装的 .mobileprovision —— 选哪一份
+#
+# ⚠️ 一份描述文件**重新生成后名字通常不变**（都叫 "XC Wildcard"），只有 UUID 变。
+#    于是「按名字找」会同时命中新旧两份，选到哪一份取决于目录顺序 ——
+#    而旧的那份不含新加的设备，装上去就报 0xe8008012（错误信息完全指不到这一点）。
+#    所以选择分两轮：
+#      第 1 轮：**含目标设备**的那一份（给了 --udid 时）
+#      第 2 轮：**生成时间最新**的那一份（新一份通常是旧一份的超集）
 PROFILE_PATH=""
-if [ -n "$PROFILE_NAME" ]; then
+
+# 这份描述文件算候选吗？
+#   - 带设备名单（说明是 ad hoc / 开发类，而不是 App Store 分发）
+#   - 分发签名（get-task-allow=false）
+#   - 给了名字就按名字；否则 application-identifier 要匹配本 App
+#     （精确匹配，或团队通配 <团队ID>.*）
+is_candidate() {
+  local p="$1" aid
+  aid="$(pp_field "$p" Entitlements:application-identifier)"
+  [ -n "$aid" ] || return 1
+  [ "$(pp_field "$p" Entitlements:get-task-allow)" = "true" ] && return 1
+  [ -n "$(devices_of_profile "$p")" ] || return 1
+  if [ -n "$PROFILE_NAME" ]; then
+    [ "$(pp_field "$p" Name)" = "$PROFILE_NAME" ] || return 1
+  else
+    case "$aid" in
+      "${TEAM_ID}.${BUNDLE_ID}"|"${TEAM_ID}.*") ;;
+      *) return 1 ;;
+    esac
+  fi
+  return 0
+}
+
+if [ -n "$WANT_UDID" ]; then
   while IFS= read -r p; do
-    [ "$(pp_field "$p" Name)" = "$PROFILE_NAME" ] && PROFILE_PATH="$p" && break
+    is_candidate "$p" || continue
+    if devices_of_profile "$p" | grep -qix "$WANT_UDID"; then
+      PROFILE_PATH="$p"
+      break
+    fi
   done < <(all_profiles)
 fi
 
-# plist 里还没配好时，自动在本机已安装的描述文件里找一份能用的 ad hoc：
-#   - 必须带设备名单（说明是 ad hoc / 开发类，而不是 App Store 分发）
-#   - 必须是分发签名（get-task-allow=false）
-#   - application-identifier 要匹配本 App：精确匹配，或团队通配 <团队ID>.*
-# 这样用户只要「在后台建好描述文件 -> 双击装上 -> 跑脚本」，中间不用手改配置。
 if [ -z "$PROFILE_PATH" ]; then
+  best_ts=-1
   while IFS= read -r p; do
-    aid="$(pp_field "$p" Entitlements:application-identifier)"
-    [ -n "$aid" ] || continue
-    [ "$(pp_field "$p" Entitlements:get-task-allow)" = "true" ] && continue
-    [ -n "$(devices_of_profile "$p")" ] || continue
-    case "$aid" in
-      "${TEAM_ID}.${BUNDLE_ID}"|"${TEAM_ID}.*")
-        PROFILE_NAME="$(pp_field "$p" Name)"
-        PROFILE_PATH="$p"
-        say "[自动识别] 找到可用的 ad hoc 描述文件：${PROFILE_NAME}"
-        break ;;
-    esac
+    is_candidate "$p" || continue
+    ts="$(pp_epoch "$p" | tr -d '[:space:]')"
+    case "$ts" in ''|*[!0-9]*) ts=0 ;; esac
+    if [ "$ts" -gt "$best_ts" ]; then best_ts="$ts"; PROFILE_PATH="$p"; fi
   done < <(all_profiles)
+fi
+
+if [ -n "$PROFILE_PATH" ]; then
+  PROFILE_NAME="$(pp_field "$PROFILE_PATH" Name)"
+  PROFILE_UUID="$(profile_uuid "$PROFILE_PATH")"
+  # 导出配置里给 **UUID** 而不是名字：重新生成描述文件后名字不变、只有 UUID 变，
+  # 本机同时存在新旧两份同名文件时，按名字会让 Xcode 选到旧的那份（不含新设备）。
+  EXPORT_PROFILE_KEY="${PROFILE_UUID:-$PROFILE_NAME}"
+  # 同名多份时明确说出来 —— 「后台明明加了设备却装不上」最常见的来源就是这个
+  SAME_NAME=""
+  while IFS= read -r p; do
+    [ "$p" = "$PROFILE_PATH" ] && continue
+    [ "$(pp_field "$p" Name)" = "$PROFILE_NAME" ] || continue
+    SAME_NAME="${SAME_NAME}${SAME_NAME:+、}$(basename "$p")"
+  done < <(all_profiles)
+  say "描述文件：${PROFILE_NAME}"
+  say "  UUID    ：${PROFILE_UUID:-未知}"
+  say "  文件    ：$(printf '%s' "$PROFILE_PATH" | sed "s|$HOME|~|")"
+  say "  生成于  ：$(date -r "$(pp_epoch "$PROFILE_PATH")" '+%Y-%m-%d %H:%M' 2>/dev/null || echo 未知)"
+  say "  设备    ：$(devices_of_profile "$PROFILE_PATH" | grep -c . || true) 台"
+  if [ -n "$SAME_NAME" ]; then
+    say "  ⚠️  本机还有同名描述文件：$SAME_NAME"
+    say "     上面这份是【按目标设备 / 生成时间】挑出来的最新那份；"
+    say "     导出时会按 UUID 指定，所以不会选错 —— 但建议把旧的删掉以免以后混淆。"
+  fi
 fi
 
 # --devices：列出设备、硬件 UDID、以及「开发者模式」是否开启。
@@ -213,6 +283,16 @@ if blocked:
     print('     ⚠️ 但 developerModeStatus 是随连接一起缓存的，**可能滞后**：')
     print('        实测设备上已经打开、且实际安装已经能过这一关，这里仍报未开启。')
     print('        所以别只信它 —— 以实际安装时报不报 Developer Mode is disabled 为准。')
+
+unpaired = [r for r in rows if r['paired'] != 'paired']
+if unpaired:
+    print('')
+    print('  ⚠️ 下面这些设备还没和这台 Mac 配对，现在装不上去（RemotePairingError 2）：')
+    for r in unpaired:
+        print('       - %s（%s）' % (r['name'], r['udid']))
+    print('     一条命令发起配对，然后在**设备上**点「信任此电脑」并输入锁屏密码：')
+    print('       xcrun devicectl manage pair --device <上面的 UDID>')
+    print('     看到 available (paired) 就成了。刚插上的设备不会自动配对，第一次必须人工信任一次。')
 PY
   else
     say "devicectl 没给出结果，退回 xctrace（拿不到开发者模式状态）："
@@ -369,11 +449,12 @@ else
 	<key>manageAppVersionAndBuildNumber</key><false/>
 	<key>provisioningProfiles</key>
 	<dict>
-		<key>${BUNDLE_ID}</key><string>${PROFILE_NAME}</string>
+		<key>${BUNDLE_ID}</key><string>${EXPORT_PROFILE_KEY}</string>
 	</dict>
 </dict>
 </plist>
 PLIST
+  say "  导出指定的描述文件：${PROFILE_NAME}（UUID ${PROFILE_UUID:-未知}）"
 fi
 
 say "== 3/4 导出 IPA =="
@@ -395,12 +476,26 @@ cp "$IPA_SRC" "$IPA_DST"
 say "== 4/4 校验 =="
 PP="$(profile_of_ipa "$IPA_DST")" || fail "读不出 IPA 里的描述文件"
 PNAME="$(plutil -extract Name raw "$PP" 2>/dev/null)"
+PUUID="$(plutil -extract UUID raw "$PP" 2>/dev/null)"
 PAID="$(plutil -extract Entitlements.application-identifier raw "$PP" 2>/dev/null)"
 PEXP="$(plutil -extract ExpirationDate raw "$PP" 2>/dev/null)"
 say "  描述文件：$PNAME"
+say "  UUID    ：$PUUID"
 say "  适用 App：$PAID"
 say "  到期    ：$PEXP"
 say "  体积    ：$(du -h "$IPA_DST" | cut -f1)"
+
+# 强校验：IPA 里嵌的必须是**我们选中的那一份**。
+# 名字相同、UUID 不同时，Xcode 完全可能挑到本机另一份同名的旧描述文件 ——
+# 现场表现是「归档导出都成功、装到设备上才报 0xe8008012」。
+if [ "$MODE" = "adhoc" ] && [ -n "$PROFILE_UUID" ] && [ "$PUUID" != "$PROFILE_UUID" ]; then
+  say "  ❌ IPA 里嵌的不是选中的那份描述文件！"
+  say "     选中：${PROFILE_UUID}（$(pp_field "$PROFILE_PATH" Name)）"
+  say "     实嵌：${PUUID}（${PNAME}）"
+  say "     多半是本机还有一份**同名**的旧描述文件被 Xcode 挑走了。"
+  say "     解决：把旧的删掉，或给新的一份改名。查一下有哪些：$0 --list-devices"
+  exit 1
+fi
 
 DEVS="$(devices_in_plist "$PP")"
 N="$(printf '%s\n' "$DEVS" | grep -c . || true)"
@@ -436,7 +531,14 @@ if [ -n "$INSTALL_TO" ]; then
   if ! xcrun devicectl device install app --device "$INSTALL_TO" "$APPB" 2>&1 | tee "$INSTALL_LOG"; then
     rm -rf "$TMPAPP"
     say ""
-    if grep -q "Developer Mode is disabled" "$INSTALL_LOG"; then
+    if grep -q "must be paired before it can be connected" "$INSTALL_LOG"; then
+      fail "设备还没和这台 Mac 配对（RemotePairingError 2）。先跑这一步，再重试安装：
+
+       xcrun devicectl manage pair --device ${INSTALL_TO}
+
+     跑完**在设备上点「信任此电脑」并输入锁屏密码**，看到 available (paired) 就成了。
+     （刚插上的设备不会自动配对；第一次必须人工信任一次。）"
+    elif grep -q "Developer Mode is disabled" "$INSTALL_LOG"; then
       fail "设备没开「开发者模式」。设置 -> 隐私与安全性 -> 开发者模式 -> 打开，然后重启设备。
      （ad-hoc 签名也绕不过这一关 —— 除非改走 OTA / Apple Configurator）"
     elif grep -q "cannot be installed on this device" "$INSTALL_LOG"; then

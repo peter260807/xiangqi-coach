@@ -16,7 +16,7 @@ settings:
     SWIFT_STRICT_CONCURRENCY: minimal
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     GENERATE_INFOPLIST_FILE: YES
-    CURRENT_PROJECT_VERSION: 2
+    CURRENT_PROJECT_VERSION: 3
     MARKETING_VERSION: "1.0.0"
     DEVELOPMENT_LANGUAGE: zh-Hans
     # 设备构建（archive / ad hoc 打包）必须有团队 ID，否则 xcodebuild 会直接
