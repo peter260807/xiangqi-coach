@@ -7,6 +7,65 @@
   var EMPTY = '.';
   var START = 'rnbakabnr/........./.c.....c./p.p.p.p.p/........./........./P.P.P.P.P/.C.....C./........./RNBAKABNR';
   var MATE = 200000;
+
+  /* ---- LMR（后期着法缩减）：排在后面的安静着法先用浅一点的深度搜，
+     分数够高再全深度重搜。一个节点里真正有希望的往往只有排序后的前几个着法，
+     后面的安静着法绝大多数会被 alpha-beta 直接剪掉；用浅深度快速否掉它们，
+     省下的时间换成深度。与空着裁剪并列的两大剪枝之一。
+
+     三条保守约束：深度不够不启用；排序后的前 LMR_FULL_MOVES 个着法不缩减；
+     被将军 / 吃子 / 将军着法都不缩减（它们往往是唯一的解，缩减会漏杀）。 */
+  var LMR_MIN_DEPTH = 3;
+  var LMR_FULL_MOVES = 3;
+
+  /* 缩减量表：行 = 深度，列 = 着法序号（从 1 起）。
+     r = 0.75 + ln(d)·ln(m) / 2.25（与主流引擎同一量级），取整后夹在 0…4。
+     预计算成表是为了不在热点循环里调 Math.log —— 每个节点、每个着法都要查一次。 */
+  var LMR_TABLE = (function () {
+    var t = [];
+    for (var d = 0; d < 64; d++) {
+      var row = [];
+      for (var m = 0; m < 64; m++) {
+        if (d === 0 || m === 0) { row.push(0); continue; }
+        var v = 0.75 + Math.log(d) * Math.log(m) / 2.25;
+        row.push(Math.max(0, Math.min(4, Math.floor(v))));
+      }
+      t.push(row);
+    }
+    return t;
+  })();
+
+  /* ---- 空着裁剪（null move pruning）：先「放弃一手」试探，如果对手多走一步
+     仍然够不到 beta，说明这个局面已经好到不必细算，直接按 beta 剪枝。
+     放在着法生成**之前** —— 剪枝成功连着法都不用生成。 ---- */
+
+  /* 低于这个深度不做：剪掉 2 层后几乎没得搜，反而失真 */
+  var NULL_MOVE_MIN_DEPTH = 3;
+  /* 空着之后缩减几层。用固定值而不是 `2 + depth/6` 那类自适应，是为了**便于归因**：
+     出问题时只需怀疑一个参数，而不是两处联动 */
+  var NULL_MOVE_R = 2;
+
+  /* 归因开关（用环境变量控制，便于同一个文件跑所有变体）。
+     剪枝都是**近似**，A/B 变差时必须能「只关一个」来定位是哪一项干的 ——
+     否则每改一次都要重跑全套，时间全耗在换编译上。 */
+  var HAS_ENV = (typeof process !== 'undefined' && !!process.env);
+  /* **LMR 与空着裁剪默认是关的** —— 它们在 40 局 A/B 里还没证明自己
+     （得分率 47.5%、Elo −17、区间 [−118,+83] 跨 0，虽然深度 +2.5 层）。
+     未验证的行为改动不该默认生效：宁可先留着开关，等大样本 A/B 有正证据再翻默认值。
+       XQ_LMR=1 / XQ_NULL=1          打开
+       XQ_NO_LMR=1 / XQ_NO_NULL=1    强制关闭（优先级更高，防止将来翻默认值时
+                                     旧脚本的语义静默反转）
+     （浏览器里没有 process：剪枝一律关闭、长将判负开启，与 iOS 侧默认一致。） */
+  function envFlag(on, off) {
+    if (!HAS_ENV) return false;
+    if (process.env[off]) return false;
+    return !!process.env[on];
+  }
+  var LMR_ENABLED = envFlag('XQ_LMR', 'XQ_NO_LMR');
+  var NULL_MOVE_ENABLED = envFlag('XQ_NULL', 'XQ_NO_NULL');
+  /* 长将判负是**已验证**的（确定性验证 + 40 局 A/B 得分率 58.8%），默认开启，
+     只留开关用于归因对照 */
+  var PERPETUAL_ENABLED = !(HAS_ENV && process.env.XQ_NO_PERPETUAL);
   /* 搜索窗口哨兵必须是有穷值：用 Infinity 会让空窗口退化成 (∞, ∞) 并污染置换表 */
   var INF = 1000000000;
 
@@ -565,6 +624,9 @@
   var SEE_MAX_PLY = 4;
 
   var seeCalls = 0;   /* 自证用：SEE 到底被调了多少次（为 0 就说明门控把步子迈没了） */
+  /* 上一次搜索是不是「空着」。**连续两次空着没有意义**（等于双方各放弃一手、
+     局面回到原样），而且会一直递归下去 —— 所以空着之后必须禁用一次。 */
+  var nullMoveOk = true;
 
   function orderMoves(b, moves, ply, ttMove) {
     var k = killers[ply] || [null, null];
@@ -622,13 +684,41 @@
      计数表用 Map 而不是线性回溯：每个节点只做一次 O(1) 的查表，
      否则安静残局里一段能有上百手，每层往回扫一遍会把搜索拖慢。 */
 
-  var repStack = [];     /* 当前段上的局面 { h, fresh }，栈顶 = 当前局面 */
+  /* 当前段上的局面 { h, fresh, mover, check }，栈顶 = 当前局面。
+     mover/check 记的是「走到这个局面的那一手」的走子方与是否将军 —— 带它们是为了
+     在重复发生时能构造出循环体交给 perpetualChecker，把**长将判负**也搬进搜索。
+     否则搜索只认「重复 = 和棋」，会主动走进长将循环捞半分，到对局层却被判负。
+     栈底那项（段的起点）的 mover/check 没有意义，不会被读。 */
+  var repStack = [];
   var repCount = new Map();   /* 段内每个局面哈希出现过几次 */
   var repSaved = [];     /* 遇到新的不可逆段时，把上一段的计数表暂存到这里 */
 
   /** 这一手之后，之前的局面还有可能重现吗？吃子 / 兵走子 → 不可能 */
   function repIsIrreversible(piece, cap) {
     return cap !== EMPTY || piece === 'P' || piece === 'p';
+  }
+
+  /**
+   * 这个局面「子力够不够做空着裁剪」。
+   *
+   * 残局必须禁用：象棋残局里「放弃一手」常常反而变好（zugzwang，
+   * 车兵 / 马兵残局尤其明显），拿它去剪枝会把赢棋判成输棋。
+   *
+   * 判据刻意收得保守：只有本方**还有车 / 炮 / 马**才算子力足够。士象不参与进攻，
+   * 「士象全 对 无子」通常也是和棋 —— 把它们算进来会让本该禁用的局面误开空着裁剪。
+   *
+   * 只在 depth >= NULL_MOVE_MIN_DEPTH 时调用；找到第一个子就返回。
+   */
+  function hasNonPawnMaterial(b, side) {
+    var wantRed = (side === 'r');
+    for (var i = 0; i < 90; i++) {
+      var p = b[i];
+      if (p === EMPTY) continue;
+      if (isRed(p) !== wantRed) continue;
+      if (p === 'R' || p === 'N' || p === 'C'
+          || p === 'r' || p === 'n' || p === 'c') return true;
+    }
+    return false;
   }
 
   /**
@@ -640,24 +730,35 @@
     var b = parseBoard(startFen || START);
     var side = startSide || 'r';
     var keys = [computeHash(b, side)], segs = [0], segStart = 0;
+    /* 与 keys 同下标：走到 keys[i] 的那一手的（走子方, 是否将军）。
+       下标 0 是起始局面，没有「走到它的那一手」，填占位值（不会被读）。 */
+    var infos = [['r', false]];
     for (var i = 0; i < (moves || []).length; i++) {
       var m = moves[i];
+      var mover = side;
       var irrev = repIsIrreversible(b[m[0]], b[m[1]]);
       applyRaw(b, m);
       side = other(side);
       if (irrev) segStart = keys.length;
       keys.push(computeHash(b, side));
+      /* 走完这一手后 side 已经是对方，「对方被将」就等于「这一手是将军」 */
+      infos.push([mover, inCheck(b, side)]);
       segs.push(segStart);
     }
-    return { keys: keys, segs: segs };
+    return { keys: keys, segs: segs, infos: infos };
   }
 
-  /** 走子之后把新局面压进路径栈 —— 必须在 makeMove **之后**调用（要读新局面的哈希） */
-  function repPush(b, m, cap) {
+  /** 走子之后把新局面压进路径栈 —— 必须在 makeMove **之后**调用（要读新局面的哈希）。
+      `mover` 是刚落子的那一方（此时走子权已经交给它的对手）。 */
+  function repPush(b, m, cap, mover) {
     var fresh = repIsIrreversible(b[m[1]], cap);
     if (fresh) { repSaved.push(repCount); repCount = new Map(); }
-    repStack.push({ h: curHash, fresh: fresh });
+    /* 走完后轮到对手 —— 对手被将，就等于这一手是将军。
+       顺手返回它给 LMR 用，省得再算一次 inCheck（每个节点都要跑）。 */
+    var givesCheck = inCheck(b, other(mover));
+    repStack.push({ h: curHash, fresh: fresh, mover: mover, check: givesCheck });
     repCount.set(curHash, (repCount.get(curHash) || 0) + 1);
+    return givesCheck;
   }
 
   function repPop() {
@@ -680,6 +781,36 @@
   }
 
   /**
+   * 当前局面重复了 —— 那这是「长将循环」吗？
+   *
+   * 返回长将的一方（**该方判负**）；null 表示普通重复，按和棋算。
+   *
+   * 判据与对局层的 adjudicate 用的是**同一个** perpetualChecker：只取出
+   * 「上次出现当前局面 → 现在」这一段的着法（走子方 + 是否将军）交给它，
+   * 由它去认谁在长将。这样搜索和裁判对长将的看法终于一致 —— 从前搜索只认
+   * 「重复 = 0 分」，优势方就会主动走进长将循环捞半分，到对局层却被判负
+   * （两批 A/B 各有 2 局栽在这上面，是结构性的）。
+   *
+   * 搜索仍然是**两次重复**就介入（对局层是三次），这个不一致刻意保留：
+   * 防的是「双方都愿意重复」导致的无限循环，宁可早判。
+   */
+  function repPerpetualLoser() {
+    if (repStack.length <= 1) return null;
+    /* 栈顶（下标 length-1）就是当前局面，从它下面一个位置往前找「上一次出现」 */
+    var prev = -1;
+    for (var i = repStack.length - 2; i >= 0; i--) {
+      if (repStack[i].h === curHash) { prev = i; break; }
+    }
+    if (prev < 0 || prev + 1 >= repStack.length) return null;
+    var cycle = [];
+    for (var k = prev + 1; k < repStack.length; k++) {
+      cycle.push({ side: repStack[k].mover, check: repStack[k].check });
+    }
+    if (!cycle.length) return null;
+    return perpetualChecker(cycle);
+  }
+
+  /**
    * 把「根节点 + 它之前的棋局历史」装进路径栈。
    *
    * history 可以写成两种：
@@ -696,7 +827,7 @@
       startSide = history.side || 'r';
     }
     if (!moves || !moves.length) {
-      repStack = [{ h: curHash, fresh: false }];
+      repStack = [{ h: curHash, fresh: false, mover: 'r', check: false }];
       repCount = new Map();
       repCount.set(curHash, 1);
       repSaved = [];
@@ -711,7 +842,9 @@
     repCount = new Map();
     repSaved = [];
     for (var i = from; i < ctx.keys.length; i++) {
-      repStack.push({ h: ctx.keys[i], fresh: i === from });
+      var info = ctx.infos[i] || ['r', false];
+      repStack.push({ h: ctx.keys[i], fresh: i === from,
+                      mover: info[0], check: info[1] });
       repCount.set(ctx.keys[i], (repCount.get(ctx.keys[i]) || 0) + 1);
     }
     /* 根节点不是被 repPush 压进去的，它不需要在下一次 pop 时还原计数表 */
@@ -748,8 +881,16 @@
 
     /* 重复局面必须在置换表**之前**判。0 分是「相对路径」的结论 —— 同一个局面
        从别的路径搜过来并不等于和棋，把它当普通评分存进置换表会污染后续搜索。
-       也因为要提前返回，这里天然不会把 0 写进表里。 */
-    if (ply > 0 && repIsDraw()) return 0;
+       也因为要提前返回，这里天然不会把评分写进表里。 */
+    if (ply > 0 && repIsDraw()) {
+      /* 先问一句「这是不是长将循环」：是的话长将方判负（给绝杀分，按 ply 递减，
+         与「无合法着法」用的是同一套表示），而不是判和。 */
+      if (PERPETUAL_ENABLED) {
+        var repLoser = repPerpetualLoser();
+        if (repLoser) return repLoser === side ? -MATE + ply : MATE - ply;
+      }
+      return 0;
+    }
 
     var alphaOrig = alpha;
     var plyKey = Math.min(ply, MAX_PLY - 1);
@@ -771,26 +912,91 @@
 
     if (depth <= 0) return quiesce(b, side, alpha, beta, ply, 8);
 
+    /* 空着裁剪和 LMR 都要知道「当前节点是否被将军」，合起来只算一次。
+       只在深度够时才付这笔钱 —— inCheck 要扫全盘找将。 */
+    var needInCheck = depth >= Math.min(NULL_MOVE_MIN_DEPTH, LMR_MIN_DEPTH);
+    var inCheckNow = needInCheck ? inCheck(b, side) : false;
+
+    /* 空着裁剪：先「放弃一手」试探。如果对手**多走一步**仍然够不到 beta，
+       说明这个局面已经好到不必细算 —— 直接按 beta 剪枝。
+       放在着法生成**之前**：剪枝成功连着法都不用生成。
+
+       三个前提缺一不可：① 不被将军（被将时每一步都可能是唯一的解）
+       ② 上一次不是空着（连续空着等于双方都放弃一手，会无限递归）
+       ③ 子力足够（残局的 zugzwang 会让「放弃一手」反而变好） */
+    if (NULL_MOVE_ENABLED && depth >= NULL_MOVE_MIN_DEPTH && nullMoveOk
+        && !inCheckNow && hasNonPawnMaterial(b, side)) {
+      /* 缩减后**至少留 1 层**，剩下的交给静态搜索兜底。
+         ⚠️ 原来这里写的是 `depth - 1 - NULL_MOVE_R > 0`，那个条件在「搜索深度 4」
+         这类常见场景下永远不会成立 —— negamax 拿到的 depth 最大只有 maxDepth-1 = 3，
+         而 3-1-2 = 0 不 > 0，于是空着裁剪**静默失效**（节点数一个没少才发现）。
+         「深度够不够」的判据只留一处（上面的 MIN_DEPTH），别再叠加更严的守卫。 */
+      var nmDepth = depth - 1 - NULL_MOVE_R;
+      if (nmDepth < 1) nmDepth = 1;
+      /* 空着：棋盘不动，只把走子权交给对方 —— 哈希里的走子方项要跟着翻 */
+      curHash ^= ZSIDE;
+      nullMoveOk = false;
+      var nmScore = -negamax(b, other(side), nmDepth, -beta, -beta + 1, ply + 1);
+      nullMoveOk = true;
+      curHash ^= ZSIDE;
+      if (nmScore >= beta) {
+        /* 不写置换表：这是「少算了一层」的结论，当普通评分存进去会污染搜索 */
+        return beta;
+      }
+    }
+
     var opp = other(side);
     var moves = orderMoves(b, genMoves(b, side), plyKey, ttMove);
     var best = -INF, bestMove = null, anyLegal = false, searchedOne = false;
+    /* 已搜索过的合法着法数（不是循环下标 —— 非法着法被 continue 跳过，
+       用下标会让缩减判断偏早） */
+    var moveIdx = 0;
+
+    /* LMR 的两个前提：深度够、着法够多（浅节点上不值得这么做） */
+    var lmrPossible = LMR_ENABLED
+      && depth >= LMR_MIN_DEPTH && moves.length > LMR_FULL_MOVES;
+    /* inCheckNow 已在上面（空着裁剪那一段）算过，这里直接复用，不重复付钱 */
 
     for (var i = 0; i < moves.length; i++) {
       var m = moves[i];
       var cap = makeMove(b, m);
       if (inCheck(b, side) || kingsFacing(b)) { undoMove(b, m, cap); continue; }
       anyLegal = true;
-      repPush(b, m, cap);
+      var givesCheck = repPush(b, m, cap, side);
+
+      /* LMR：只缩减「排序靠后的安静着法」。吃子、将军、被将军三类都不缩减 ——
+         它们往往是唯一的解，缩减会把正确着法漏掉（宁可少省一点时间）。 */
+      var reduced = 0;
+      if (lmrPossible && moveIdx >= LMR_FULL_MOVES && cap === EMPTY
+          && !inCheckNow && !givesCheck) {
+        reduced = LMR_TABLE[Math.min(depth, 63)][Math.min(moveIdx + 1, 63)];
+        /* 缩减后至少要留 1 层可搜，否则等于不搜 */
+        var maxR = Math.max(0, depth - 2);
+        if (reduced > maxR) reduced = maxR;
+      }
 
       var sc;
       if (!searchedOne) {
         /* 首着必须用全窗口：此时 alpha 可能仍是 -INF，空窗口会算错 */
         sc = -negamax(b, opp, depth - 1, -beta, -alpha, ply + 1);
+      } else if (reduced > 0) {
+        /* 先用缩减深度 + 零窗口试探，够好再按全深度重搜。
+           ⚠️ 重搜是**两步**，和下面 PVS 分支一致：先零窗口确认它确实超过 alpha，
+           再开全窗口取精确值。只做第一步会漏掉落在 (alpha, beta) 区间里的精确值 ——
+           那个值要写进置换表、也会成为 PV，不精确会顺着树往上放大。 */
+        sc = -negamax(b, opp, depth - 1 - reduced, -alpha - 1, -alpha, ply + 1);
+        if (sc > alpha) {
+          sc = -negamax(b, opp, depth - 1, -alpha - 1, -alpha, ply + 1);
+          if (sc > alpha && sc < beta) {
+            sc = -negamax(b, opp, depth - 1, -beta, -alpha, ply + 1);
+          }
+        }
       } else {
         sc = -negamax(b, opp, depth - 1, -alpha - 1, -alpha, ply + 1);
         if (sc > alpha && sc < beta) sc = -negamax(b, opp, depth - 1, -beta, -alpha, ply + 1);
       }
       searchedOne = true;
+      moveIdx++;
       repPop();
       undoMove(b, m, cap);
 
@@ -866,7 +1072,7 @@
         for (var i = 0; i < moves.length; i++) {
           var m = moves[i];
           var cap = makeMove(b, m);
-          repPush(b, m, cap);
+          repPush(b, m, cap, side);
           var sc = -negamax(b, opp, d - 1, -INF, -alpha, 1);
           repPop();
           undoMove(b, m, cap);

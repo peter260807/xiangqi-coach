@@ -49,6 +49,69 @@ final class Engine {
     static let mate: Int32 = 200_000
     static let infinite: Int32 = 100_000_000
 
+    // MARK: LMR（后期着法缩减）
+
+    /// 排在后面的安静着法，先用**浅一点的深度**搜；分数够高再全深度重搜。
+    ///
+    /// 为什么值：一个节点里真正有希望的往往只有排序后的前几个着法，
+    /// 后面的安静着法绝大多数会被 alpha-beta 直接剪掉。用浅深度快速否掉它们，
+    /// 省下的时间换成深度 —— 这是与空着裁剪并列的两大剪枝之一。
+    ///
+    /// 三条保守约束（都踩过坑的典型来源）：
+    /// - 深度不够不启用（`lmrMinDepth`）：太浅时缩放会失真
+    /// - 排序后的前 `lmrFullMoves` 个着法不缩减：它们已经是有希望的那些
+    /// - **被将军时不用**、**吃子不缩减**：这两类着法往往是唯一的解，缩减会漏杀
+    static let lmrMinDepth = 3
+    static let lmrFullMoves = 3
+
+    /// 缩减量表：行 = 深度，列 = 着法序号（从 1 起）。
+    ///
+    /// `r = 0.75 + ln(d)·ln(m) / 2.25`（与主流引擎同一量级），取整后夹在 0…4。
+    /// 预计算成表是为了不在热点循环里调 `log` —— 每个节点、每个着法都要查它一次。
+    static let lmrTable: [[Int8]] = {
+        var t = [[Int8]](repeating: [Int8](repeating: 0, count: 64), count: 64)
+        for d in 1..<64 {
+            for m in 1..<64 {
+                let v = 0.75 + log(Double(d)) * log(Double(m)) / 2.25
+                t[d][m] = Int8(max(0, min(4, Int(v))))
+            }
+        }
+        return t
+    }()
+
+    // MARK: 空着裁剪（null move pruning）
+
+    /// 低于这个深度不做空着裁剪 —— 剪掉 2 层后几乎没得搜，反而失真。
+    static let nullMoveMinDepth = 3
+
+    /// 空着之后缩减几层。用固定值而不是 `2 + depth/6` 那种自适应，
+    /// 是为了**便于归因**：出问题时只需怀疑一个参数，而不是两处联动。
+    static let nullMoveR = 2
+
+    /// 归因开关（用环境变量控制，便于用同一个二进制跑所有变体）。
+    ///
+    /// **LMR 与空着裁剪默认是关的** —— 它们在 40 局 A/B 里还没证明自己
+    /// （得分率 47.5%、Elo −17、区间 [−118,+83] 跨 0，虽然深度 +2.5 层）。
+    /// 未验证的行为改动不该默认在 App 里生效：宁可先留着开关，
+    /// 等大样本 A/B 给出正证据再翻默认值。
+    ///
+    ///   `XQ_LMR=1`    打开 LMR
+    ///   `XQ_NULL=1`   打开空着裁剪
+    ///   `XQ_NO_LMR=1` / `XQ_NO_NULL=1`  强制关闭（优先级更高，防止将来翻默认值时
+    ///                 旧脚本的语义静默反转）
+    ///
+    /// 长将判负是**已验证**的（机制有确定性验证 + 40 局 A/B 得分率 58.8%），
+    /// 所以默认开启，只留 `XQ_NO_PERPETUAL=1` 用于归因对照。
+    private static func flag(_ on: String, _ off: String) -> Bool {
+        let env = ProcessInfo.processInfo.environment
+        if env[off] != nil { return false }
+        return env[on] != nil
+    }
+
+    static let lmrEnabled = flag("XQ_LMR", "XQ_NO_LMR")
+    static let nullMoveEnabled = flag("XQ_NULL", "XQ_NO_NULL")
+    static let perpetualEnabled = ProcessInfo.processInfo.environment["XQ_NO_PERPETUAL"] == nil
+
     private let queue = DispatchQueue(label: "com.peter260807.xiangqi.engine", qos: .userInitiated)
 
     // MARK: Zobrist
@@ -79,6 +142,9 @@ final class Engine {
 
     private var killers: [(Move?, Move?)] = []
     private var history = [Int32](repeating: 0, count: 90 * 90)
+    /// 上一次搜索是不是「空着」。**连续两次空着没有意义**（等于双方各放弃一手、
+    /// 局面回到原样），而且会一直递归下去 —— 所以空着之后必须禁用一次。
+    private var nullMoveOk = true
 
     /// 这次搜索算了多少次 SEE（自证用，见 SearchResult.seeCalls）
     private var seeCalls = 0
@@ -566,8 +632,15 @@ final class Engine {
         }
     }
 
-    /// 当前「不可逆段」上的局面 { 哈希, 这一段是不是从它开始的 }
-    private var repStack: [(h: UInt64, fresh: Bool)] = []
+    /// 当前「不可逆段」上的局面。
+    ///
+    /// 除了哈希，还带着「走到这个局面的那一手」的信息：`mover` 是走子方、
+    /// `check` 是这一手有没有将军。带这两个字段是为了在重复发生时能构造出
+    /// 循环体交给 `Rules.perpetualChecker`，把**长将判负**也搬进搜索 ——
+    /// 否则搜索只知道「重复 = 和棋」，会主动走进长将循环捞半分，到对局层却被判负。
+    ///
+    /// 栈底那项（段的起点）的 `mover` / `check` 没有意义，不会被读。
+    private var repStack: [(h: UInt64, fresh: Bool, mover: Side, check: Bool)] = []
     /// 段内每个局面出现过几次。用字典是**有意的**：换成每层往回线性扫描，
     /// 安静残局里一段能有上百手，每个节点都要多扫上百次比较。
     private var repCount: [UInt64: Int] = [:]
@@ -579,10 +652,34 @@ final class Engine {
         cap != 0 || Piece.type(piece) == Piece.typePawn
     }
 
+    /// 这个局面「子力够不够做空着裁剪」。
+    ///
+    /// **残局必须禁用**：象棋残局里「放弃一手」常常反而变好（zugzwang，
+    /// 车兵 / 马兵残局尤其明显），拿它去剪枝会把赢棋判成输棋。
+    ///
+    /// 判据刻意收得保守：只有本方**还有车 / 炮 / 马**才算子力足够。士象不参与进攻，
+    /// 「士象全 对 无子」通常也是和棋 —— 把它们算进来会让本该禁用的局面误开空着裁剪。
+    ///
+    /// 只在 `depth >= nullMoveMinDepth` 时调用；找到第一个子就返回，
+    /// 所以这次全盘扫描摊到浅节点上是划算的。
+    private func hasNonPawnMaterial(_ b: [Int8], _ side: Side) -> Bool {
+        let wantRed = (side == .red)
+        for i in 0..<90 {
+            let p = b[i]
+            if p == 0 { continue }
+            if Piece.isRed(p) != wantRed { continue }
+            let t = Piece.type(p)
+            if t == Piece.typeRook || t == Piece.typeCannon || t == Piece.typeHorse {
+                return true
+            }
+        }
+        return false
+    }
+
     /// 把「根节点 + 它之前的棋局历史」装进路径栈
     private func repInit(_ history: SearchHistory?) {
         guard let h = history, !h.moves.isEmpty else {
-            repStack = [(h: hash, fresh: false)]
+            repStack = [(h: hash, fresh: false, mover: .red, check: false)]
             repCount = [hash: 1]
             repSaved = []
             return
@@ -591,13 +688,19 @@ final class Engine {
         var side = h.startSide
         var keys: [UInt64] = [computeHash(b, side)]
         var segs: [Int] = [0]
+        // 与 keys 同下标：走到 keys[i] 的那一手的（走子方, 是否将军）。
+        // 下标 0 是起始局面，没有「走到它的那一手」，填占位值（不会被读）。
+        var infos: [(Side, Bool)] = [(.red, false)]
         var segStart = 0
         for m in h.moves {
             let irrev = Engine.isIrreversible(b[m.from], b[m.to])
+            let mover = side
             _ = Rules.makeMove(&b, m)
             side = side.other
             if irrev { segStart = keys.count }
             keys.append(computeHash(b, side))
+            // 走完这一手后 side 已经是对方，「对方被将」就等于「这一手是将军」
+            infos.append((mover, Rules.inCheck(b, side)))
             segs.append(segStart)
         }
         // 以真实棋盘为准：万一调用方给的历史和棋盘不是同一路棋，也不至于引入假重复
@@ -608,22 +711,31 @@ final class Engine {
         repCount = [:]
         repSaved = []
         for i in from..<keys.count {
-            repStack.append((h: keys[i], fresh: i == from))
+            repStack.append((h: keys[i], fresh: i == from,
+                             mover: infos[i].0, check: infos[i].1))
             repCount[keys[i], default: 0] += 1
         }
         // 根节点不是 repPush 压进去的，它不需要在下一次 repPop 时还原计数表
         if !repStack.isEmpty { repStack[0].fresh = false }
     }
 
-    /// 走子之后把新局面压进路径栈 —— 必须在 doMove **之后**调用（要读新局面）
-    private func repPush(_ b: [Int8], _ m: Move, _ cap: Int8) {
+    /// 走子之后把新局面压进路径栈 —— 必须在 doMove **之后**调用（要读新局面）。
+    ///
+    /// `mover` 是刚落子的那一方（此时走子权已经交给它的对手）。
+    /// **返回「这一手是否将军」** —— LMR 要用它决定该不该缩减；顺手返回，
+    /// 省得再算一次 `inCheck`（它每个节点都要跑，不能重复付钱）。
+    @discardableResult
+    private func repPush(_ b: [Int8], _ m: Move, _ cap: Int8, _ mover: Side) -> Bool {
         let fresh = Engine.isIrreversible(b[m.to], cap)
         if fresh {
             repSaved.append(repCount)
             repCount = [:]
         }
-        repStack.append((h: hash, fresh: fresh))
+        // 走完后轮到对手 —— 对手被将，就等于这一手是将军
+        let givesCheck = Rules.inCheck(b, mover.other)
+        repStack.append((h: hash, fresh: fresh, mover: mover, check: givesCheck))
         repCount[hash, default: 0] += 1
+        return givesCheck
     }
 
     private func repPop() {
@@ -643,6 +755,38 @@ final class Engine {
         repStack.count > 1 && (repCount[hash] ?? 0) > 1
     }
 
+    /// 当前局面重复了 —— 那这是「长将循环」吗？
+    ///
+    /// 返回长将的一方（**该方判负**）；nil 表示普通重复，按和棋算。
+    ///
+    /// 判据与对局层的 `Rules.adjudicate` 用的是**同一个** `Rules.perpetualChecker`：
+    /// 只取出「上次出现当前局面 → 现在」这一段的着法（走子方 + 是否将军）交给它，
+    /// 由它去认谁在长将。这样搜索和裁判对长将的看法终于一致 ——
+    /// 从前搜索只认「重复 = 0 分」，于是优势方会主动走进长将循环捞半分，
+    /// 到对局层却被判负（两批 A/B 各有 2 局栽在这上面，是结构性的）。
+    ///
+    /// 搜索仍然是**两次重复**就介入（对局层是三次），这个不一致刻意保留：
+    /// 防的是「双方都愿意重复」导致的无限循环，宁可早判。
+    private func repPerpetualLoser() -> Side? {
+        guard repStack.count > 1 else { return nil }
+        // 栈顶（下标 count-1）就是当前局面，从它下面一个位置往前找「上一次出现」
+        var prev = -1
+        var i = repStack.count - 2
+        while i >= 0 {
+            if repStack[i].h == hash { prev = i; break }
+            i -= 1
+        }
+        guard prev >= 0, prev + 1 < repStack.count else { return nil }
+
+        var cycle = [(side: Side, check: Bool)]()
+        cycle.reserveCapacity(repStack.count - prev - 1)
+        for k in (prev + 1)..<repStack.count {
+            cycle.append((side: repStack[k].mover, check: repStack[k].check))
+        }
+        guard !cycle.isEmpty else { return nil }
+        return Rules.perpetualChecker(cycle)
+    }
+
     // MARK: 主搜索
 
     private func negamax(_ b: inout [Int8], _ side: Side, _ depth: Int, _ alphaIn: Int32, _ beta: Int32, _ ply: Int) -> Int32 {
@@ -651,8 +795,15 @@ final class Engine {
 
         // 重复局面必须在置换表**之前**判。0 分是「相对路径」的结论 —— 同一个局面
         // 从别的路径搜过来并不等于和棋，把它当普通评分存进置换表会污染后续搜索。
-        // 也因为要提前返回，这里天然不会把 0 写进表里。
-        if ply > 0 && repIsDraw() { return 0 }
+        // 也因为要提前返回，这里天然不会把评分写进表里。
+        if ply > 0 && repIsDraw() {
+            // 先问一句「这是不是长将循环」：是的话长将方判负（给绝杀分，按 ply 递减，
+            // 与「无合法着法」同一套表示），而不是判和。
+            if Engine.perpetualEnabled, let loser = repPerpetualLoser() {
+                return loser == side ? -Engine.mate + Int32(ply) : Engine.mate - Int32(ply)
+            }
+            return 0
+        }
 
         nodes += 1
 
@@ -682,6 +833,43 @@ final class Engine {
 
         if depth <= 0 { return quiesce(&b, side, alpha, beta, ply, 8) }
 
+        // 空着裁剪和 LMR 都要知道「当前节点是否被将军」，合起来只算一次。
+        // 只在深度够时才付这笔钱 —— `inCheck` 要扫全盘找将。
+        let needInCheck = depth >= min(Engine.nullMoveMinDepth, Engine.lmrMinDepth)
+        let inCheckNow = needInCheck ? Rules.inCheck(b, side) : false
+
+        // 空着裁剪：先「放弃一手」试探。如果对手**多走一步**仍然够不到 beta，
+        // 说明这个局面已经好到不必细算 —— 直接按 beta 剪枝。
+        // 放在着法生成**之前**：剪枝成功连着法都不用生成。
+        //
+        // 三个前提缺一不可：① 不被将军（被将时每一步都可能是唯一的解）
+        // ② 上一次不是空着（连续空着等于双方都放弃一手，会无限递归）
+        // ③ 子力足够（残局的 zugzwang 会让「放弃一手」反而变好）
+        if Engine.nullMoveEnabled,
+           depth >= Engine.nullMoveMinDepth, nullMoveOk, !inCheckNow,
+           hasNonPawnMaterial(b, side) {
+            // 缩减后**至少留 1 层**，剩下的交给静态搜索兜底。
+            //
+            // ⚠️ 这里原来写的是 `if depth - 1 - r > 0`，那个条件在「搜索深度 4」
+            // 这类常见场景下**永远不会成立** —— negamax 里拿到的 depth 最大只有
+            // `maxDepth - 1`（rootSearch 传的是 d-1），也就是 3，而 3-1-2 = 0 不 > 0。
+            // 结果是空着裁剪**静默失效**：没有任何报错，只是节点数一个没少。
+            // 教训：「深度够不够」的判据只留一处（上面的 `minDepth`），别再叠加
+            // 一个看起来更严格、实际永远不成立的守卫。
+            let nmDepth = max(1, depth - 1 - Engine.nullMoveR)
+            // 空着：棋盘不动，只把走子权交给对方 —— 哈希里的走子方项要跟着翻
+            hash ^= zSide
+            nullMoveOk = false
+            let sc = -negamax(&b, side.other, nmDepth, -beta, -beta + 1, ply + 1)
+            nullMoveOk = true
+            hash ^= zSide
+            if aborted { return 0 }
+            if sc >= beta {
+                // 不写置换表：这是「少算了一层」的结论，当普通评分存进去会污染搜索
+                return beta
+            }
+        }
+
         let raw = Rules.genMoves(b, side)
         let moves = orderMoves(b, raw, plyKey, ttMove)
 
@@ -689,6 +877,14 @@ final class Engine {
         var bestMove: Move? = nil
         var anyLegal = false
         var searchedOne = false
+        /// 已经搜索过的合法着法数（不是循环下标 —— 非法着法被 continue 跳过，
+        /// 用下标会让缩减判断偏早）
+        var moveIdx = 0
+
+        // LMR 的两个前提：深度够、着法够多（浅节点上不值得这么做）
+        let lmrPossible = Engine.lmrEnabled
+            && depth >= Engine.lmrMinDepth && moves.count > Engine.lmrFullMoves
+        // `inCheckNow` 已在上面（空着裁剪那一段）算过，这里直接复用，不重复付钱
 
         for m in moves {
             let cap = doMove(&b, m)
@@ -697,12 +893,36 @@ final class Engine {
                 continue
             }
             anyLegal = true
-            repPush(b, m, cap)
+            let givesCheck = repPush(b, m, cap, side)
+
+            // LMR：只缩减「排序靠后的安静着法」。吃子、将军、被将军三类都不缩减 ——
+            // 它们往往是唯一的解，缩减会把正确着法漏掉（宁可少省一点时间）。
+            var reduced = 0
+            if lmrPossible, moveIdx >= Engine.lmrFullMoves,
+               cap == 0, !inCheckNow, !givesCheck {
+                reduced = Int(Engine.lmrTable[min(depth, 63)][min(moveIdx + 1, 63)])
+                // 缩减后至少要留 1 层可搜，否则等于不搜
+                reduced = min(reduced, max(0, depth - 2))
+            }
 
             var sc: Int32
             if !searchedOne {
                 // 首着必须用全窗口：此时 alpha 可能仍是 -infinite
                 sc = -negamax(&b, side.other, depth - 1, -beta, -alpha, ply + 1)
+            } else if reduced > 0 {
+                // 先用缩减深度 + 零窗口试探，够好再按全深度重搜。
+                //
+                // ⚠️ 重搜是**两步**，和下面 PVS 分支保持一致：先零窗口确认它确实超过
+                // alpha，再开全窗口取精确值。只做第一步会漏掉落在 (alpha, beta) 区间里的
+                // 精确值 —— 那个值要写进置换表、也会成为 PV，不精确会顺着树往上放大。
+                sc = -negamax(&b, side.other, depth - 1 - reduced,
+                              -alpha - 1, -alpha, ply + 1)
+                if sc > alpha {
+                    sc = -negamax(&b, side.other, depth - 1, -alpha - 1, -alpha, ply + 1)
+                    if sc > alpha && sc < beta {
+                        sc = -negamax(&b, side.other, depth - 1, -beta, -alpha, ply + 1)
+                    }
+                }
             } else {
                 sc = -negamax(&b, side.other, depth - 1, -alpha - 1, -alpha, ply + 1)
                 if sc > alpha && sc < beta {
@@ -710,6 +930,7 @@ final class Engine {
                 }
             }
             searchedOne = true
+            moveIdx += 1
             repPop()
             undo(&b, m, cap)
             if aborted { return 0 }
@@ -805,7 +1026,7 @@ final class Engine {
 
             for m in moves {
                 let cap = doMove(&b, m)
-                repPush(b, m, cap)
+                repPush(b, m, cap, side)
                 let sc = -negamax(&b, side.other, d - 1, -Engine.infinite, -alpha, 1)
                 repPop()
                 undo(&b, m, cap)
