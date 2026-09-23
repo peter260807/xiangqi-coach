@@ -358,6 +358,10 @@
       finishGame(nowSide);
       return;
     }
+    /* 判和必须排在「将死/困毙」之后：无子可动本身就是终局，不能被当成和棋。
+       长将判负也在这里出结果 —— 否则双方会一直循环下去（对局台实测 45% 的棋是这么结束的）。 */
+    var verdict = XQ.adjudicate(startFen, history.map(function (h) { return h.m; }));
+    if (verdict) { finishDraw(verdict); return; }
     updateEval();
     scheduleAnalysis();
 
@@ -371,6 +375,7 @@
 
   function finishGame(loserSide) {
     gameOver = true;
+    evalOverride = null;      /* 避免留着上一次「判和 / 长将」的措辞 */
     var checked = XQ.inCheck(board, loserSide);
     var winner = loserSide === 'r' ? '黑方' : '红方';
     var loser = sideName(loserSide);
@@ -384,6 +389,34 @@
     var userWon = loserSide === 'b';
     if (record) {
       record.result = userWon ? 'win' : 'loss';
+      record.finished = true;
+      XQSTORE.saveGame(record);
+      if (userWon && sceneId) XQSTORE.markDrillSolved(sceneId);
+    }
+    flushAnalysis();
+    renderStats();
+    renderTraining();
+  }
+
+  /* 判和 / 长将判负。和 finishGame 分开写：
+     和棋不该弹「将死」那种大字，也不该记成胜场。 */
+  function finishDraw(verdict) {
+    gameOver = true;
+    var isDraw = verdict.winner === null;
+    var userWon = verdict.winner === 'b';        /* 用户执红，黑方获胜即用户输 */
+    var head = isDraw ? '和棋' : (verdict.winner === 'r' ? '红方获胜' : '黑方获胜');
+
+    redScore = isDraw ? 0 : (verdict.winner === 'r' ? XQ.MATE : -XQ.MATE);
+    /* 评估条上写「已成杀」是不对的（长将判负没有杀棋），单独给一句准确的 */
+    evalOverride = isDraw ? '和棋' : (verdict.winner === 'r' ? '红方胜' : '黑方胜');
+    paintEval();
+    sync(); renderMoves();
+
+    setStatus('<span class="dot gray"></span><span><b>' + head + '</b>　' + verdict.reason + '。</span>', true);
+    toast(head, isDraw ? 'draw' : 'mate', 2400);
+
+    if (record) {
+      record.result = userWon ? 'win' : (isDraw ? 'draw' : 'loss');
       record.finished = true;
       XQSTORE.saveGame(record);
       if (userWon && sceneId) XQSTORE.markDrillSolved(sceneId);
@@ -427,6 +460,14 @@
 
   /* ---------- 电脑走棋 ---------- */
 
+  /* 交给搜索的着法历史：引擎靠它才知道哪些局面「已经出现过」（走回去按和棋算）。
+     没有它，引擎在优势时会把绕圈当成正分继续走 —— 一盘赢棋被自己走成和棋。
+     startFen 必须一起给：残局 / 杀法 / 名局不是从标准开局摆起来的，
+     少了它历史会被按标准开局重放，判出来的「重复」全是假的。 */
+  function searchHistory() {
+    return { fen: startFen, moves: history.map(function (h) { return h.m; }) };
+  }
+
   function aiTurn() {
     thinking = true;
     var hybrid = selMode.value === 'hybrid' && XQAI.isConfigured();
@@ -437,7 +478,7 @@
 
     setTimeout(function () {
       var t0 = Date.now();
-      var res = XQ.pickMove(board, 'b', selLevel.value);
+      var res = XQ.pickMove(board, 'b', selLevel.value, searchHistory());
       elInfo.textContent = '本地引擎 ' + (res.depth || 0) + ' 层 · ' + (Date.now() - t0) + 'ms';
       thinking = false;
       if (!res.move) { onMoveSettled(); return; }
@@ -451,7 +492,7 @@
           用的是走子前的局面快照，所以解释和实际走的棋必然对得上。
        2. 不需要 JSON —— 纯文本输出，既缩短了输出、也把解析失败的风险去掉了。 */
   function hybridTurn() {
-    var cands = XQ.topMoves(board, 'b', 5, 5, 2500);
+    var cands = XQ.topMoves(board, 'b', 5, 5, 2500, searchHistory());
     if (!cands.length) { thinking = false; onMoveSettled(); return; }
 
     var chosen = cands[0];
@@ -510,12 +551,17 @@
     XQ.syncHash(board, turn);
   }
 
+  /* 以「判和 / 长将判负」结束时，评估条不能再写「已成杀」——
+     长将判负不是将死，棋盘上根本没有杀棋。这里存一句更准确的措辞，
+     只在「这一局已经结束」时生效，重开/悔棋后 gameOver 变回 false 会自动忽略。 */
+  var evalOverride = null;
+
   function paintEval() {
     var redPct = Math.round(XQ.winRate(redScore) * 100);
     elRedPct.textContent = redPct + '%';
     elBlackPct.textContent = (100 - redPct) + '%';
     elEvalFill.style.width = redPct + '%';
-    elEvalText.textContent = formatEval(redScore);
+    elEvalText.textContent = (gameOver && evalOverride) ? evalOverride : formatEval(redScore);
   }
 
   /* ---------- 走子记录 ---------- */
@@ -580,7 +626,7 @@
     setStatus('<span class="dot gray pulse"></span><span>正在计算…</span>', false);
     setTimeout(function () {
       var t0 = Date.now();
-      var cands = XQ.topMoves(board, 'r', 4, 5, 2500);
+      var cands = XQ.topMoves(board, 'r', 4, 5, 2500, searchHistory());
       thinking = false;
       if (!cands.length) { setStatus('<span class="dot gray"></span><span>没有可走的着法。</span>', true); render(); return; }
       hintMove = cands[0].move;
@@ -632,7 +678,32 @@
     render();
   };
 
-  btnRestart.onclick = function () { loadScene(sceneId); };
+  /* 重开 = 把这盘棋清回初始局面，而它就排在「悔棋」旁边，误触一下整盘就没了，
+     所以先问一次。还没走过棋时重开等于什么都没发生，不打扰。 */
+  btnRestart.onclick = function () {
+    if (history.length &&
+        !confirm('重开本局？已走的 ' + history.length + ' 手会全部清掉，确定回到初始局面吗？')) return;
+    loadScene(sceneId);
+  };
+
+  /* 场景标题：直接读下拉框里的文字，保证提示里说的名字和用户刚才点的那条一致 */
+  function sceneLabel(id) {
+    for (var i = 0; i < selScene.options.length; i++) {
+      if (selScene.options[i].value === id) return selScene.options[i].text;
+    }
+    return '新棋局';
+  }
+
+  /* 换场景和「重开」是一回事：都会把这盘棋清掉。
+     场景菜单、训练页的练习列表都走这里 —— 有棋在走就先问一句，空盘不打扰。
+     返回 true 表示真的换了（调用方据此决定要不要把下拉框拨回去）。 */
+  function switchScene(id) {
+    if (history.length &&
+        !confirm('换一局？当前这局的 ' + history.length + ' 手会被丢掉。\n\n确定要换到「'
+                 + sceneLabel(id) + '」吗？')) return false;
+    loadScene(id);
+    return true;
+  }
 
   btnSave.onclick = function () {
     if (!record || !history.length) return;
@@ -642,7 +713,10 @@
     renderStats();
   };
 
-  selScene.onchange = function () { loadScene(selScene.value); };
+  selScene.onchange = function () {
+    /* 取消就把下拉框拨回原来那局，否则显示的和棋盘上的对不上 */
+    if (!switchScene(selScene.value)) selScene.value = sceneId;
+  };
   selLevel.onchange = function () {
     setStatus('<span class="dot gray"></span><span>难度已切换为「' + selLevel.options[selLevel.selectedIndex].text.replace('难度：', '') + '」</span>', false);
   };
@@ -678,7 +752,7 @@
       board: board, side: turn,
       moveText: XQ.movesToText(startFen, history.map(function (h) { return h.m; })),
       engineScore: redScore,
-      candidates: XQ.topMoves(board, 'r', 4, 4, 2000),
+      candidates: XQ.topMoves(board, 'r', 4, 4, 2000, searchHistory()),
       inCheck: XQ.inCheck(board, turn)
     };
   }
@@ -757,7 +831,9 @@
     var t0 = Date.now();
     XQAI.chat(XQAI.reviewMessages({
       moveText: moveText,
-      result: gameOver ? (record && record.result === 'win' ? '红方（你）获胜' : '黑方获胜') : '对局进行中',
+      result: !gameOver ? '对局进行中'
+        : (record && record.result === 'win' ? '红方（你）获胜'
+          : (record && record.result === 'draw' ? '和棋' : '黑方获胜')),
       endBoard: board, evalTrace: trace
     }), {
       // 跟随设置里的 max_tokens（默认 5 万），不再写死 8000
@@ -893,9 +969,10 @@
     var sceneEl = t.closest ? t.closest('[data-scene]') : null;
     if (sceneEl) {
       var sid = sceneEl.getAttribute('data-scene');
+      /* 训练页点一个练习 = 换一局，当前这盘棋同样会被清掉 */
+      if (!switchScene(sid)) return;
       goTab('play');
-      selScene.value = sid;
-      loadScene(sid);
+      selScene.value = sceneId;
       return;
     }
     var loadEl = t.closest ? t.closest('[data-load]') : null;
@@ -912,6 +989,10 @@
   function loadGame(id) {
     var g = XQSTORE.getGame(id);
     if (!g) return;
+    /* 载入存档也会把当前这盘棋丢掉，一并问一句 */
+    if (history.length &&
+        !confirm('载入存档？当前这局的 ' + history.length + ' 手会被丢掉，改成载入「'
+                 + (g.sceneName || '存档对局') + '」。')) return;
     goTab('play');
     sceneId = g.sceneId || 'start';
     sceneName = g.sceneName || '存档对局';

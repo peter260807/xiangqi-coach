@@ -8,12 +8,96 @@ struct HistoryItem {
     var side: Side
 }
 
+/// 需要二次确认的破坏性操作。
+///
+/// 「重开」按钮就挨着「悔棋」，误触一下整盘就没了；场景菜单里换一局、
+/// 训练页点开一个练习，同样会把这盘棋清掉。三种入口共用这一个弹窗 ——
+/// 文案和确认后的动作都在这里定义，免得各写一份还互相对不上。
+enum ConfirmKind {
+    /// 重开本局：局面不变，只把着法清空
+    case restart(moves: Int, title: String)
+    /// 换到另一个场景：局面整个换掉
+    case switchScene(scene: XQScene, moves: Int)
+    /// 载入存档：局面换成存档里的，进度也一起换成存档的
+    case loadGame(record: GameRecord, moves: Int)
+
+    var title: String {
+        switch self {
+        case .restart: return "重开本局？"
+        case .switchScene: return "换一局？"
+        case .loadGame: return "载入存档？"
+        }
+    }
+
+    var confirmLabel: String {
+        switch self {
+        case .restart: return "重开"
+        case .switchScene: return "换局"
+        case .loadGame: return "载入"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case let .restart(moves, title):
+            return "已走的 \(moves) 手会全部清掉，回到「\(title)」的初始局面。"
+        case let .switchScene(scene, moves):
+            return "当前这局的 \(moves) 手会被丢掉，改从「\(scene.title)」重新开始。"
+        case let .loadGame(record, moves):
+            return "当前这局的 \(moves) 手会被丢掉，改成载入存档「\(record.sceneName)」。"
+        }
+    }
+}
+
 /// 对局状态机。所有流程控制都走这里，视图只负责呈现。
 ///
 /// 走子刻意拆成两步：棋盘状态立即更新，视觉用约 0.46 秒滑过去，
 /// 再停 0.52 秒 —— 合计约 1 秒，让人看清「谁走到了哪里、吃了什么」。
 @MainActor
 final class GameState: ObservableObject {
+
+    // MARK: 破坏性操作的二次确认
+
+    /// 待确认的操作。视图只负责把它渲染成弹窗，判断与执行都在模型里
+    @Published var pendingConfirm: ConfirmKind?
+
+    /// 「重开」：场上还有棋就先问一句。空盘重开等于什么都没发生，不打扰
+    func requestRestart() {
+        if history.isEmpty {
+            load(scene: scene)
+        } else {
+            pendingConfirm = .restart(moves: history.count, title: scene.title)
+        }
+    }
+
+    /// 换场景（场景菜单与训练页都走它）：和「重开」一样会丢掉当前这盘棋
+    func requestScene(_ target: XQScene) {
+        if history.isEmpty {
+            load(scene: target)
+        } else {
+            pendingConfirm = .switchScene(scene: target, moves: history.count)
+        }
+    }
+
+    /// 确认弹窗里的「确定」被按下
+    func confirmPending() {
+        guard let kind = pendingConfirm else { return }
+        pendingConfirm = nil
+        switch kind {
+        case .restart: load(scene: scene)
+        case let .switchScene(target, _): load(scene: target)
+        case let .loadGame(record, _): loadGame(record)
+        }
+    }
+
+    /// 载入存档（战绩页的「载入」）：同样会丢掉当前这盘棋
+    func requestLoadGame(_ record: GameRecord) {
+        if history.isEmpty {
+            loadGame(record)
+        } else {
+            pendingConfirm = .loadGame(record: record, moves: history.count)
+        }
+    }
 
     static let slideMs = 460
     static let settleMs = 520
@@ -40,6 +124,10 @@ final class GameState: ObservableObject {
 
     // 展示
     @Published var redScore: Int32 = 0
+    /// 以「判和 / 长将判负」结束时，评估条不能再写「已成杀」——
+    /// 长将判负不是将死，棋盘上根本没有杀棋。这里存一句更准确的措辞。
+    /// 只在 `gameOver` 为真时被视图采用，所以重开/悔棋后不必特意清空。
+    @Published var evalOverride: String?
     @Published var statusText = "轮到你走（红方）"
     @Published var statusWarn = false
     @Published var toast: String?
@@ -221,6 +309,14 @@ final class GameState: ObservableObject {
             finish(loser: turn)
             return
         }
+        // 判和排在将死/困毙之后：无子可动本身就是终局，不能被当成和棋。
+        // 长将判负也在这里出结果 —— 否则双方会一直循环下去
+        // （对局台实测 20 局里有 45% 是在循环里结束的）。
+        if let verdict = Rules.adjudicate(startFEN: scene.startFEN,
+                                         moves: history.map { $0.move }) {
+            finishAdjudicated(verdict)
+            return
+        }
         updateEval()
         scheduleAnalysis()
         if turn == .black {
@@ -233,6 +329,7 @@ final class GameState: ObservableObject {
 
     private func finish(loser: Side) {
         gameOver = true
+        evalOverride = nil          // 避免留着上一次「判和 / 长将」的措辞
         let checked = Rules.inCheck(board, loser)
         let winner = loser == .red ? "黑方" : "红方"
         redScore = loser == .red ? -Engine.mate : Engine.mate
@@ -252,6 +349,35 @@ final class GameState: ObservableObject {
             record = r
             Archive.shared.save(r)
             if loser == .black { Archive.shared.markSolved(scene.id) }
+        }
+    }
+
+    /// 判和 / 长将判负。和 `finish(loser:)` 分开写：
+    /// 和棋不该弹「将死」那种大字，也不该记成胜场。
+    private func finishAdjudicated(_ verdict: Adjudication) {
+        gameOver = true
+        let winner = verdict.winner
+        let isDraw = winner == nil
+        redScore = isDraw ? 0 : (winner == .red ? Engine.mate : -Engine.mate)
+        // 评估条上写「已成杀」是不对的（长将判负没有杀棋），单独给一句准确的
+        evalOverride = isDraw ? "和棋" : ((winner == .red ? "红方" : "黑方") + "胜")
+        updateCheckState()
+
+        let head = winner.map { $0.label + "获胜" } ?? "和棋"
+        statusText = head + "　" + verdict.reason + "。"
+        statusWarn = true
+        showToast(isDraw ? "和 棋" : head, kind: isDraw ? "draw" : "mate", duration: 2.6)
+
+        if var r = record {
+            r.result = (winner == .black) ? "win" : (isDraw ? "draw" : "loss")
+            r.finished = true
+            r.evals = collectedEvals
+            r.flags = collectedFlags
+            r.ply = history.count
+            r.moves = history.flatMap { [$0.move.from, $0.move.to] }
+            record = r
+            Archive.shared.save(r)
+            if winner == .black { Archive.shared.markSolved(scene.id) }
         }
     }
 
@@ -300,6 +426,17 @@ final class GameState: ObservableObject {
 
     // MARK: - 电脑走棋
 
+    /// 交给搜索的着法历史：引擎靠它才知道哪些局面「已经出现过」（走回去按和棋算）。
+    /// 没有它，引擎在优势时会把绕圈当成正分继续走 —— 一盘赢棋被自己走成和棋。
+    /// startFEN 必须一起给：残局 / 杀法 / 名局不是从标准开局摆起来的，
+    /// 少了它历史会被按标准开局重放，判出来的「重复」全是假的。
+    private var searchHistory: Engine.SearchHistory? {
+        history.isEmpty ? nil
+                        : Engine.SearchHistory(startFEN: scene.startFEN,
+                                               moves: history.map { $0.move },
+                                               startSide: .red)
+    }
+
     private func aiTurn() {
         thinking = true
         let hybrid = (modeKey == "hybrid") && AIConfig.shared.isConfigured
@@ -309,7 +446,8 @@ final class GameState: ObservableObject {
 
         let level = SearchLevel.named(levelKey)
         let snapshot = board
-        Engine.shared.pickMove(board: snapshot, side: .black, level: level) { [weak self] res in
+        Engine.shared.pickMove(board: snapshot, side: .black, level: level,
+                               history: searchHistory) { [weak self] res in
             guard let self else { return }
             self.thinking = false
             self.engineInfo = "本地引擎 \(res.depth) 层"
@@ -322,7 +460,8 @@ final class GameState: ObservableObject {
 
     private func hybridTurn() {
         let snapshot = board
-        Engine.shared.topMoves(board: snapshot, side: .black, count: 5, maxDepth: 5, timeMs: 2500) { [weak self] cands in
+        Engine.shared.topMoves(board: snapshot, side: .black, count: 5, maxDepth: 5,
+                               timeMs: 2500, history: searchHistory) { [weak self] cands in
             guard let self else { return }
             guard let first = cands.first else {
                 self.thinking = false
@@ -374,7 +513,8 @@ final class GameState: ObservableObject {
         thinking = true
         statusText = "正在计算…"
         let snapshot = board
-        Engine.shared.topMoves(board: snapshot, side: .red, count: 4, maxDepth: 5, timeMs: 2200) { [weak self] cands in
+        Engine.shared.topMoves(board: snapshot, side: .red, count: 4, maxDepth: 5,
+                               timeMs: 2200, history: searchHistory) { [weak self] cands in
             guard let self else { return }
             self.thinking = false
             guard let best = cands.first else {
@@ -737,7 +877,10 @@ final class GameState: ObservableObject {
         guard !gameOver else { return }
         let snapshot = board
         let side = turn
-        Engine.shared.search(board: snapshot, side: side, maxDepth: 3, timeMs: 500) { [weak self] r in
+        // 评估条也要知道「这盘棋已经出现过哪些局面」：优势方被逼和 / 弱势方求和，
+        // 显示 0 才是实话。不给历史的话它会一直报着已经拿不到的分数。
+        Engine.shared.search(board: snapshot, side: side, maxDepth: 3, timeMs: 500,
+                             history: searchHistory) { [weak self] r in
             guard let self else { return }
             self.redScore = (side == .red) ? r.score : -r.score
         }

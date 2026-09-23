@@ -402,20 +402,27 @@
     ctx.lineCap = 'butt';
   }
 
+  /* 棋盘上下的方位标注：用象棋的标准记法，不用国际象棋的 a~i / 9~0。
+   * 下边（红方）纵线自右向左是「一」到「九」，上边（黑方）自左向右是「1」到「9」，
+   * 与棋谱（炮二平五、将5平6）和 engine.js 里的记法完全同一套编号。
+   * 横线方向在记法里只有「进/退 + 步数」，没有编号，所以左右两侧不标数字。 */
   function drawCoords() {
     if (!st.showCoords) return;
-    ctx.fillStyle = 'rgba(140,106,58,.5)';
-    ctx.font = '10px ui-monospace, "SF Mono", Menlo, monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    var letters = 'abcdefghi';
+    /* 位置挑在棋子够不到的留白里：棋子半径 0.43 格，顶/底线棋子从 0.42 格处开始，
+       标注只能贴到 0.26 格处，否则红方的字会压在红方底线的车上。 */
+    var yTop = MARGIN * 0.26, yBottom = BH - MARGIN * 0.26;
+    var redNums = '\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d';
     for (var c = 0; c < 9; c++) {
-      ctx.fillText(letters[c], px(c), MARGIN * 0.5);
-      ctx.fillText(letters[c], px(c), BH - MARGIN * 0.5);
-    }
-    for (var r = 0; r < 10; r++) {
-      ctx.fillText(String(9 - r), MARGIN * 0.48, py(r));
-      ctx.fillText(String(9 - r), BW - MARGIN * 0.48, py(r));
+      /* 红方在下：最右边那列是「一」 */
+      ctx.fillStyle = 'rgba(180,39,29,.62)';
+      ctx.font = '10px "Songti SC", "STSong", "SimSun", serif';
+      ctx.fillText(redNums.charAt(8 - c), px(c), yBottom);
+      /* 黑方在上：最左边那列是「1」 */
+      ctx.fillStyle = 'rgba(44,42,39,.55)';
+      ctx.font = '10px ui-monospace, "SF Mono", Menlo, monospace';
+      ctx.fillText(String(c + 1), px(c), yTop);
     }
   }
 

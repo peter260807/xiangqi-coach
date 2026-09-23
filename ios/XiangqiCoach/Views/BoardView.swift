@@ -313,19 +313,35 @@ struct BoardView: View {
         }
     }
 
+    /// 棋盘上下的方位标注。
+    ///
+    /// 用象棋的标准记法，不是国际象棋的 a~i / 9~0 —— 后者在棋盘上写着 h3，
+    /// 棋谱里却是「炮二平五」，两套编号谁都对不上。
+    ///   下边（红方）：纵线自右向左为「一」到「九」
+    ///   上边（黑方）：纵线自左向右为「1」到「9」
+    /// 例：黑将开局在中间那列（黑方 5 路），「将5平6」就是它往右挪一格。
+    /// 横线方向在记法里只有「进/退 + 步数」，本身没有编号，所以左右两侧不标数字。
+    ///
+    /// 编号规则与 `Notation.fileNumber` 是同一套：红方 9-col，黑方 col+1。
     private func drawCoords(_ ctx: inout GraphicsContext) {
-        let letters = Array("abcdefghi")
+        let redNums = ["一", "二", "三", "四", "五", "六", "七", "八", "九"]
+        // 位置要挑在「棋子够不到」的那条留白里：棋子半径 0.43 格，
+        // 底线/顶线的棋子从 0.42 格处开始，所以标注只能贴到 0.26 格处，
+        // 否则红方的字会压在红方底线的车上，糊成一团。
+        let yTop = BoardMetrics.margin * 0.26
+        let yBottom = BoardMetrics.logicalH - BoardMetrics.margin * 0.26
         for c in 0..<9 {
-            var t = Text(String(letters[c])).font(.system(size: 10, design: .monospaced))
-            t = t.foregroundColor(Color(red: 0.549, green: 0.416, blue: 0.227).opacity(0.5))
-            ctx.draw(t, at: CGPoint(x: BoardMetrics.x(c), y: BoardMetrics.margin * 0.5))
-            ctx.draw(t, at: CGPoint(x: BoardMetrics.x(c), y: BoardMetrics.logicalH - BoardMetrics.margin * 0.5))
-        }
-        for r in 0..<10 {
-            var t = Text(String(9 - r)).font(.system(size: 10, design: .monospaced))
-            t = t.foregroundColor(Color(red: 0.549, green: 0.416, blue: 0.227).opacity(0.5))
-            ctx.draw(t, at: CGPoint(x: BoardMetrics.margin * 0.48, y: BoardMetrics.y(r)))
-            ctx.draw(t, at: CGPoint(x: BoardMetrics.logicalW - BoardMetrics.margin * 0.48, y: BoardMetrics.y(r)))
+            // 红方在下：最右边那列是「一」，往左递增到「九」
+            var red = Text(redNums[8 - c])
+                .font(.system(size: 10, weight: .medium, design: .serif))
+            red = red.foregroundColor(Palette.red.opacity(0.62))
+            ctx.draw(red, at: CGPoint(x: BoardMetrics.x(c), y: yBottom))
+
+            // 黑方在上：最左边那列是「1」
+            var black = Text(String(c + 1))
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+            black = black.foregroundColor(Palette.ink.opacity(0.55))
+            ctx.draw(black, at: CGPoint(x: BoardMetrics.x(c), y: yTop))
         }
     }
 }

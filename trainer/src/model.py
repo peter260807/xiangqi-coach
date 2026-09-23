@@ -113,11 +113,16 @@ def huber_loss(pred, target, beta=HUBER_BETA):
 
 
 class XQNet(nn.Module):
-    def __init__(self, l1=512, l2=64):
+    def __init__(self, l1=512, l2=64, feature_dim=FEATURE_DIM):
         super().__init__()
         self.l1 = l1
         self.l2 = l2
-        self.feat = nn.EmbeddingBag(FEATURE_DIM + 1, l1, mode='sum')
+        # 特征维度由编码方式决定（见 features.py）：pst=1260，halfka=11340。
+        # 哨兵索引取 feature_dim，权重矩阵因此是 (feature_dim + 1) 行 ——
+        # 多出来那一行专门给补齐位，且必须恒为 0（zero_pad_row）。
+        self.feature_dim = feature_dim
+        self.pad_index = feature_dim
+        self.feat = nn.EmbeddingBag(feature_dim + 1, l1, mode='sum')
         self.side_bias = nn.Parameter(torch.zeros(2, l1))
         self.fc2 = nn.Linear(l1, l2)
         self.fc3 = nn.Linear(l2, 1)
@@ -155,7 +160,7 @@ class XQNet(nn.Module):
         否则等于给每个局面加了个固定噪声。
         """
         with torch.no_grad():
-            self.feat.weight[PAD_INDEX].zero_()
+            self.feat.weight[self.pad_index].zero_()
 
     @torch.no_grad()
     def predict_cp(self, idx, side):
@@ -164,13 +169,13 @@ class XQNet(nn.Module):
         return torch.clamp(v, -VALUE_CLIP, VALUE_CLIP) * OUTPUT_SCALE
 
 
-def collate(records, device):
+def collate(records, device, feature_dim=FEATURE_DIM):
     """
     records: [(feature_idx_list, side_int, target_value), ...]
     返回已经 padding 好的张量。
     """
     b = len(records)
-    idx = torch.full((b, MAX_FEATURES), PAD_INDEX, dtype=torch.long)
+    idx = torch.full((b, MAX_FEATURES), feature_dim, dtype=torch.long)
     side = torch.empty(b, dtype=torch.long)
     target = torch.empty(b, dtype=torch.float32)
     for i, (feats, s, t) in enumerate(records):

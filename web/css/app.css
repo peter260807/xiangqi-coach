@@ -223,6 +223,7 @@ canvas#board {
 .toast.capture { background: rgba(154, 106, 18, .95); }
 .toast.check { background: rgba(180, 39, 29, .95); }
 .toast.mate { background: rgba(15, 110, 86, .95); }
+.toast.draw { background: rgba(74, 68, 60, .95); }
 
 /* ---------- 状态条 ---------- */
 

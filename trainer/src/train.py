@@ -46,48 +46,26 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import resume                                               # noqa: E402
+import features                                              # noqa: E402
+import resume                                                # noqa: E402
 from gen_data import REC_DTYPE, REC_SIZE, position_hashes   # noqa: E402
-from model import (CP_SCALE, FEATURE_DIM, MAX_FEATURES, OUTPUT_SCALE,  # noqa: E402
-                   PAD_INDEX, VALUE_CLIP, XQNet, huber_loss)
-
-# ---- 查表：ASCII 字符 -> 棋子种类（0-6）/ 是否红方 ----
-_BASE = np.full(256, -1, dtype=np.int16)
-_IS_RED = np.zeros(256, dtype=bool)
-for _i, _ch in enumerate('KABNRCP'):
-    _BASE[ord(_ch)] = _i
-    _IS_RED[ord(_ch)] = True
-for _i, _ch in enumerate('kabnrcp'):
-    _BASE[ord(_ch)] = _i
-    _IS_RED[ord(_ch)] = False
-
-_SQ = np.arange(90, dtype=np.int16)[None, :]
+from model import (CP_SCALE, MAX_FEATURES, OUTPUT_SCALE,     # noqa: E402
+                   VALUE_CLIP, XQNet, huber_loss)
 
 
-def compute_features(boards, sides):
+def compute_features(boards, sides, mode='pst'):
     """
-    boards: (B, 90) uint8；sides: (B,) uint8（0=红方走，1=黑方走）
-    返回:  (B, 32) int64 特征索引，不足处填 PAD_INDEX
+    转发到 features.py —— 特征编码的唯一实现在那里。
 
-    视角归一化在这里完成：轮到谁走，谁的子就映射到类型 0-6，
-    对方映射到 7-13。这样网络只需学一套「己方 / 对方」的概念，
-    不必分别为红黑各学一套，样本效率翻倍。
+    那里支持三种编码：
+      pst         1260 维，格号 x 棋子类型（v1/v2 一直在用）
+      halfka      11340 维，再乘上「己方将位」的 9 个宫格桶
+      halfka_rand 11340 维，桶里装随机分组（对照用）
+
+    这里保留同名的薄包装是为了不破坏 verify.py / bench_train_step.py
+    的既有 import（它们按老签名 compute_features(boards, sides) 调用）。
     """
-    base = _BASE[boards]                                 # (B,90)
-    occupied = base >= 0
-    is_red = _IS_RED[boards]
-    red_to_move = (sides == 0)[:, None]
-    own = (is_red == red_to_move)
-
-    final_type = base + np.where(own, 0, 7)
-    feat_all = _SQ * 14 + final_type                     # (B,90)
-
-    # 把有子的格子稳定地排到前面，取前 32 个
-    order = np.argsort(~occupied, axis=1, kind='stable')
-    take = order[:, :MAX_FEATURES]
-    cols = np.take_along_axis(feat_all, take, axis=1)
-    valid = np.take_along_axis(occupied, take, axis=1)
-    return np.where(valid, cols, PAD_INDEX).astype(np.int64)
+    return features.compute_features(boards, sides, mode)
 
 
 # ---------------- 数据加载 ----------------
@@ -183,12 +161,12 @@ def make_target(cps, mode):
             ).astype(np.float32)
 
 
-def make_batch(data, idxs, device, mode='value'):
+def make_batch(data, idxs, device, mode='value', feat='pst'):
     boards = data['board'][idxs].view(np.uint8).reshape(len(idxs), 90)
     sides = data['side'][idxs].astype(np.uint8)
     cps = data['cp'][idxs]
 
-    feats = compute_features(boards, sides)
+    feats = compute_features(boards, sides, feat)
     target = make_target(cps, mode)
 
     idx_t = torch.from_numpy(feats).to(device)
@@ -218,7 +196,7 @@ def pred_to_cp(pred_np, mode):
     return CP_SCALE * np.log(p / (1.0 - p))
 
 
-def evaluate(net, data, idxs, device, batch, mode='value'):
+def evaluate(net, data, idxs, device, batch, mode='value', feat='pst'):
     """
     在验证集上算 loss 与三项指标。
 
@@ -233,7 +211,7 @@ def evaluate(net, data, idxs, device, batch, mode='value'):
     with torch.no_grad():
         for s in range(0, len(idxs), batch):
             sub = idxs[s:s + batch]
-            i, sd, t = make_batch(data, sub, device, mode)
+            i, sd, t = make_batch(data, sub, device, mode, feat)
             out = net(i, sd)
             tot += batch_loss(out, t, mode).item() * len(sub)
             cnt += len(sub)
@@ -296,6 +274,11 @@ def parse_args(argv=None):
     ap.add_argument('--lr', type=float, default=1e-3)
     ap.add_argument('--l1', type=int, default=512, help='第一层宽度')
     ap.add_argument('--l2', type=int, default=64, help='第二层宽度')
+    ap.add_argument('--feat', choices=features.MODES, default='pst',
+                    help='特征编码：pst=1260 维（默认，v1/v2 一直用的）；'
+                         'halfka=11340 维，额外带上「己方将/帅所在宫格」的 9 个桶；'
+                         'halfka_rand=同维度但桶里装随机分组，用来区分'
+                         '「将位这个信息有用」和「单纯多了 9 倍容量」')
     ap.add_argument('--val-frac', type=float, default=0.05, help='验证集比例')
     ap.add_argument('--target-mode', choices=['value', 'winrate'], default='value',
                     help='value=线性回归引擎分（默认）；winrate=v1 的压缩胜率，仅供复现旧结果')
@@ -326,6 +309,7 @@ def main():
     print('  输出目录: %s' % os.path.abspath(args.out))
     print('  训练目标: %s' % ('线性分值（单位兵）' if args.target_mode == 'value'
                               else '压缩胜率 sigmoid(cp/400)（旧行为）'))
+    print('  特征编码: %s（%d 维）' % (args.feat, features.feature_dim(args.feat)))
     print('=' * 64)
 
     print('读取数据…')
@@ -345,10 +329,11 @@ def main():
         data, tr_idx, val_idx = dedup_positions(data, args.val_frac)
 
     os.makedirs(args.out, exist_ok=True)
-    net = XQNet(l1=args.l1, l2=args.l2).to(device)
+    feat_dim = features.feature_dim(args.feat)
+    net = XQNet(l1=args.l1, l2=args.l2, feature_dim=feat_dim).to(device)
     n_param = sum(p.numel() for p in net.parameters())
     print('网络参数：%d 个（第一层 %d x %d = %d，占大头）'
-          % (n_param, FEATURE_DIM, args.l1, FEATURE_DIM * args.l1))
+          % (n_param, feat_dim, args.l1, feat_dim * args.l1))
 
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
     steps_per_epoch = max(1, len(tr_idx) // args.batch)
@@ -388,7 +373,7 @@ def main():
             log('[警告] checkpoint 读不出来（%s），改为从头训练' % e)
         if ck is not None:
             # 形状相关的参数必须一致，否则权重根本接不上
-            shape_keys = ('l1', 'l2', 'target_mode')
+            shape_keys = ('l1', 'l2', 'target_mode', 'feat')
             bad = [k for k in shape_keys if ck.get(k) != getattr(args, k)]
             if bad:
                 log('[拒绝续训] checkpoint 的 %s 与当前参数不一致：'
@@ -444,7 +429,8 @@ def main():
                 break
 
             sub = tr_idx[order[s:s + args.batch]]
-            idx_t, side_t, tgt_t = make_batch(data, sub, device, args.target_mode)
+            idx_t, side_t, tgt_t = make_batch(data, sub, device,
+                                              args.target_mode, args.feat)
 
             out = net(idx_t, side_t)
             loss = batch_loss(out, tgt_t, args.target_mode)
@@ -469,7 +455,8 @@ def main():
             log('轮次 %d 完成：平均 loss=%.5f，用时 %.1f 分钟'
                 % (epoch, run_loss / run_cnt, (time.time() - ep_t0) / 60))
 
-        st = evaluate(net, data, val_idx, device, args.batch, args.target_mode)
+        st = evaluate(net, data, val_idx, device, args.batch,
+                      args.target_mode, args.feat)
         log('  验证：loss=%.5f  相关系数=%.4f（均势档 %.4f，%d 个局面）'
             % (st['loss'], st['corr'], st['corr_bal'], st['n_bal']))
         log('        换算成引擎分值：平均偏差 %.1f 分（均势档 %.1f 分）'
@@ -487,7 +474,7 @@ def main():
             'scheduler': sched.state_dict(),
             'rng': rng.bit_generator.state,
             'l1': args.l1, 'l2': args.l2,
-            'target_mode': args.target_mode,
+            'target_mode': args.target_mode, 'feat': args.feat,
             'epochs': args.epochs, 'batch': args.batch, 'lr': args.lr,
             'epoch': epoch, 'step': step,
             'data_fingerprint': fp,

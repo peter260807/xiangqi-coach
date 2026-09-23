@@ -229,7 +229,7 @@ struct PlayView: View {
         HStack(spacing: 8) {
             actionButton("提示", icon: "lightbulb") { requestHint() }
             actionButton("悔棋", icon: "arrow.uturn.backward") { game.undo() }
-            actionButton("重开", icon: "arrow.clockwise") { game.load(scene: game.scene) }
+            actionButton("重开", icon: "arrow.clockwise") { game.requestRestart() }
             actionButton("点评", icon: "text.bubble") { coach(question: nil) }
             actionButton("更多", icon: "ellipsis.circle") { showControls = true }
         }
@@ -267,7 +267,7 @@ struct PlayView: View {
                 Text("红方").font(.system(size: 12)).foregroundStyle(Palette.ink3)
                 Text("\(redPct)%").font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.red)
                 Spacer()
-                Text(Engine.scoreText(game.redScore))
+                Text((game.gameOver ? game.evalOverride : nil) ?? Engine.scoreText(game.redScore))
                     .font(.system(size: 12)).foregroundStyle(Palette.ink2)
                 Spacer()
                 Text("\(100 - redPct)%").font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.black)
@@ -325,6 +325,7 @@ struct PlayView: View {
         case "capture": return Palette.amber.opacity(0.95)
         case "check": return Palette.red.opacity(0.95)
         case "mate": return Palette.jade.opacity(0.95)
+        case "draw": return Palette.ink.opacity(0.95)
         default: return Palette.ink.opacity(0.9)
         }
     }
@@ -359,7 +360,7 @@ struct PlayView: View {
             HStack(spacing: 8) {
                 actionButton("提示", icon: "lightbulb") { requestHint() }
                 actionButton("悔棋", icon: "arrow.uturn.backward") { game.undo() }
-                actionButton("重开", icon: "arrow.clockwise") { game.load(scene: game.scene) }
+                actionButton("重开", icon: "arrow.clockwise") { game.requestRestart() }
             }
 
             // 有谱可演的场景才出现：名局全谱、杀法解法、开局谱
@@ -467,6 +468,9 @@ struct PlayView: View {
         }
     }
 
+    // 「重开」与「换场景」的判断、文案、确认后的动作都在 GameState 里
+    // （见 ConfirmKind）—— 弹窗挂在根视图上，这里只管把点击转过去。
+
     private func actionButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 3) {
@@ -485,20 +489,20 @@ struct PlayView: View {
 
     private var sceneMenu: some View {
         Menu {
-            Button("标准开局（红先）") { game.load(scene: .standard()) }
+            Button("标准开局（红先）") { game.requestScene(.standard()) }
             Menu("杀法练习") {
                 ForEach(scenes.filter { $0.kind == .mate }) { s in
-                    Button(s.title) { game.load(scene: s) }
+                    Button(s.title) { game.requestScene(s) }
                 }
             }
             Menu("开局库") {
                 ForEach(scenes.filter { $0.kind == .opening }) { s in
-                    Button(s.title) { game.load(scene: s) }
+                    Button(s.title) { game.requestScene(s) }
                 }
             }
             Menu("实用残局") {
                 ForEach(scenes.filter { $0.kind == .study }) { s in
-                    Button(s.title) { game.load(scene: s) }
+                    Button(s.title) { game.requestScene(s) }
                 }
             }
         } label: {

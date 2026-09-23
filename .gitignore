@@ -72,3 +72,6 @@ ios/archive/
 tools/net-in-engine/net_d512.json
 tools/net-in-engine/ref_cp.json
 tools/net-in-engine/engine.js
+
+# 对局台用的 UCI 前端编译产物（tools/uci/run.sh 随时可重新生成）
+tools/uci/build/

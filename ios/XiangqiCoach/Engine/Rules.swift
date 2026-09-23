@@ -55,6 +55,12 @@ struct Move: Equatable, Hashable {
     var to: Int
 }
 
+/// 对局层的终局裁决。`winner` 为 nil 表示和棋。
+struct Adjudication: Equatable {
+    var winner: Side?
+    var reason: String
+}
+
 // MARK: - 走子规则
 
 /// 中国象棋规则引擎。只负责「什么能走、什么算合法」，不做搜索。
@@ -394,5 +400,86 @@ struct Rules {
             total += worth[t]
         }
         return total
+    }
+
+    // MARK: 对局层终局判定（判和 / 长将判负）
+
+    /// 60 回合无吃子判和 —— 一回合 = 双方各一手，所以按半回合数是 120
+    static let noCapturePlies = 120
+
+    /// 一次重复循环里谁在长将。
+    ///
+    /// 抽成纯函数是为了能直接测「双方都长将」这种实战里极难摆出来的局面 ——
+    /// 用合成数据测判定逻辑，比硬凑一个棋例可靠得多。
+    ///
+    /// - Parameter cycle: 循环内的着法（side = 走子方，check = 这一手是否将军）
+    /// - Returns: 长将的一方；nil = 双方都长将 或 双方都不是（按规则判和）
+    static func perpetualChecker(_ cycle: [(side: Side, check: Bool)]) -> Side? {
+        var redChecks = true, blackChecks = true, redMoves = 0, blackMoves = 0
+        for m in cycle {
+            if m.side == .red {
+                redMoves += 1
+                if !m.check { redChecks = false }
+            } else {
+                blackMoves += 1
+                if !m.check { blackChecks = false }
+            }
+        }
+        // 循环里没出过手的一方不算长将（别让空集的真值混进来）
+        if redMoves == 0 { redChecks = false }
+        if blackMoves == 0 { blackChecks = false }
+        // 都长将 / 都不长将 → 不认定某一方长将
+        if redChecks == blackChecks { return nil }
+        return redChecks ? .red : .black
+    }
+
+    /// 判定当前局面是否已经终局。
+    ///
+    /// 只认规则、不做搜索 —— 与 `web/js/engine.js` 的 `adjudicate` 是同一套判据，
+    /// 改一边必须改另一边。
+    ///
+    /// - Returns: nil 表示还没终局；`winner` 为 nil 表示判和
+    static func adjudicate(startFEN: String, moves: [Move], startSide: Side = .red) -> Adjudication? {
+        if moves.isEmpty { return nil }
+
+        var b = parse(startFEN)
+        var side = startSide
+        // 每手走完后的局面键（含走子方），下标 0 = 起始局面。
+        // 用完整盘面而不是哈希：哈希碰撞会把「像重复」当成「真重复」而误判长将。
+        func key(_ s: Side) -> String { fen(b) + "|" + (s == .red ? "r" : "b") }
+        var keys = [key(side)]
+        var movers = [Side]()
+        var gaveCheck = [Bool]()
+        var lastCapturePly = 0
+
+        for (j, m) in moves.enumerated() {
+            movers.append(side)
+            let cap = makeMove(&b, m)          // 只动盘面，不碰任何全局状态
+            side = side.other
+            if cap != 0 { lastCapturePly = j + 1 }
+            keys.append(key(side))
+            gaveCheck.append(inCheck(b, side))
+        }
+        let n = moves.count
+
+        // 1) 60 回合无吃子 → 和
+        if n - lastCapturePly >= noCapturePlies {
+            return Adjudication(winner: nil, reason: "60 回合无吃子")
+        }
+
+        // 2) 三次重复局面：拿「倒数第三次出现 → 现在」这一段当循环体
+        let cur = keys[n]
+        let occ = keys.indices.filter { keys[$0] == cur }
+        if occ.count < 3 { return nil }
+        let from = occ[occ.count - 3]
+
+        var cycle = [(side: Side, check: Bool)]()
+        for k in from..<n { cycle.append((movers[k], gaveCheck[k])) }
+
+        // 一方长将、另一方不将 → 长将方判负；双方都长将 → 和（中国象棋规则）
+        if let checker = perpetualChecker(cycle) {
+            return Adjudication(winner: checker.other, reason: "长将（\(checker.label)长将判负）")
+        }
+        return Adjudication(winner: nil, reason: "三次重复局面（双方均非长将）")
     }
 }

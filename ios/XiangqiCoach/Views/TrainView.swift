@@ -75,7 +75,8 @@ struct TrainView: View {
 
     private func openScene(_ id: String) {
         guard let s = SceneCatalog.all(library).first(where: { $0.id == id }) else { return }
-        game.load(scene: s)
+        // 走 requestScene：当前这盘棋有棋可丢时会先问一句（弹窗挂在根视图上）
+        game.requestScene(s)
         tab = 0
     }
 
@@ -219,7 +220,7 @@ struct StatsView: View {
             Spacer(minLength: 4)
 
             Button("载入") {
-                game.loadGame(g)
+                game.requestLoadGame(g)
                 tab = 0
             }
             .font(.system(size: 12))

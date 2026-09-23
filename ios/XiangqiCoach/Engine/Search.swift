@@ -26,6 +26,9 @@ struct SearchResult {
     var score: Int32 = 0
     var depth: Int = 0
     var nodes: Int = 0
+    /// 这次搜索里 SEE 被算过多少次。**自证用**：排序里新加的那条路如果一次都没走到，
+    /// 说明它其实是死代码，而「没报错」看不出来这件事。
+    var seeCalls: Int = 0
 }
 
 struct CandidateMove {
@@ -76,6 +79,14 @@ final class Engine {
 
     private var killers: [(Move?, Move?)] = []
     private var history = [Int32](repeating: 0, count: 90 * 90)
+
+    /// 这次搜索算了多少次 SEE（自证用，见 SearchResult.seeCalls）
+    private var seeCalls = 0
+
+    /// 自证用：排序阶段到底算过几次 SEE。
+    /// 测试拿它证明「门控真的跳过了那些明显安全的吃子」，而不是把 SEE 算了个遍。
+    /// 注意只在**排序这一层**看才有意义 —— 整棵搜索树的深处必然还有别的可疑吃子。
+    var seeCallCount: Int { seeCalls }
 
     // MARK: 时间与节点
 
@@ -210,29 +221,278 @@ final class Engine {
         return s
     }
 
-    // MARK: 着法排序
+    // MARK: 静态交换评估（SEE）与排序用的静态棋理
+    //
+    // P1-2。原来的排序只有「TT 着法 → 吃子(MVV-LVA) → 杀手 → 历史」，两个毛病：
+    //
+    //   1. **亏本吃排在所有安静着法前面。** `pieceValue[cap] * 16 - pieceValue[attacker]`
+    //      只知道「吃到的值多少」，不知道**目标格有没有人守**。于是「车吃兵、立刻被兵
+    //      吃回来」排在最前面 —— 这种着法每个节点都要展开一整棵子树才算得出「亏了 800」。
+    //   2. **安静着法没有任何静态信息。** 兜底分只有历史表，而历史表在**开局**几乎攒不出
+    //      区分度（局面高度对称、分数大量并列）→ 排序退化成近似随机 → 剪枝率崩掉。
+    //      实测这就是「同样 32 个棋子，开局 8 层要 2833 万节点、中局只要 343 万」的根因。
+    //
+    // 这两件事的期望值都是**实测**出来的，不是照抄标准做法（见 tools/order-ab.js）：
+    // 位置表增量单独用就把平均节点数压到 76.8%，而 SEE **必须**排除将/帅才有正收益
+    // （不排除时它把正常吃子算成巨亏、反而比不改还慢）。
 
-    private func orderMoves(_ b: [Int8], _ moves: [Move], _ ply: Int, _ ttMove: Move?) -> [Move] {
+    /// 位置价值表的取值（红方视角、黑方按行镜像）—— 与 `evaluate` 里的取法必须一致
+    ///
+    /// 注：SEE / 排序这几块都是 `internal` 而不是 `private`，是为了让
+    /// `XiangqiCoachTests` 能用 `@testable import` 直接断言它们 ——
+    /// 和 `evaluate` 一样。SEE 是「就地改棋盘再还原」的写法，出问题不抛异常、
+    /// 只是悄悄算错，没有独立断言看着不行。
+    static func pstValue(_ type: Int, _ red: Bool, _ r: Int, _ c: Int) -> Int32 {
+        let row = red ? r : 9 - r
+        switch type {
+        case Piece.typePawn:   return pstPawn[row][c]
+        case Piece.typeHorse:  return pstHorse[row][c]
+        case Piece.typeCannon: return pstCannon[row][c]
+        case Piece.typeRook:   return pstRook[row][c]
+        default:               return 0
+        }
+    }
+
+    /// 位置价值表的**增量**：走完之后这颗子在位置表上值多少、减掉原来值多少。
+    ///
+    /// 别小看它 —— 位置表本身已经把「过河兵推进」「马往前跳」「车占好线」都编码进去了，
+    /// 所以这一个差值就同时覆盖了这几条，成本只有两次查表。
+    /// 方向：不需要按颜色翻符号 —— 行镜像之后，「红兵前进」和「黑卒前进」都会让
+    /// 分值变大，所以「增量 > 0」对两边都等于「这颗子变好了」。
+    /// 见上面 `pstValue` 的说明：本函数与 SEE、排序那几块同样放开到 internal
+    func pstDelta(_ b: [Int8], _ from: Int, _ to: Int) -> Int32 {
+        let p = b[from]
+        let red = Piece.isRed(p)
+        let t = Piece.type(p)
+        let before = Engine.pstValue(t, red, Rules.row(from), Rules.col(from))
+        let after = Engine.pstValue(t, red, Rules.row(to), Rules.col(to))
+        return (after - before) * Engine.pstWeight
+    }
+
+    /// `side` 方攻击 `sq` 上那颗子的**最便宜**的子。
+    ///
+    /// 必须是「找最小」而不是「列全部」—— SEE 交换序列的每一步都要调一次，
+    /// 列全部再排序会把成本放大好几倍。按价值从低到高依次试：
+    /// 兵 100 → 士/象 200 → 马 400 → 炮 450 → 车 900。
+    ///
+    /// ⚠️ **故意不算将/帅。** 它的「吃回」在象棋里经常是非法的（那个格子被自己人挡着时
+    /// 将在原地就违规，或者格子另外被别的子守住），SEE 不知道这些，会把正常吃子算成
+    /// -60000 级的巨亏再打到安静着法后面去。实测不排除将/帅时 SEE 反而让搜索变慢。
+    /// 见上面 `pstValue` 的说明：本函数同样放开到 internal 供测试直接断言
+    func leastAttacker(_ b: [Int8], _ sq: Int, _ side: Side) -> (from: Int, value: Int32)? {
+        let r = Rules.row(sq), c = Rules.col(sq)
+        let red = side == .red
+
+        // 兵/卒（100）
+        let pawn = Piece.code(Piece.typePawn, side)
+        let fwd = red ? r + 1 : r - 1
+        if Rules.inBoard(fwd, c) && b[Rules.index(fwd, c)] == pawn {
+            return (Rules.index(fwd, c), 100)
+        }
+        // 横着吃的兵必须已过河：红兵过河 = 行 ≤ 4，黑卒过河 = 行 ≥ 5
+        if red ? r <= 4 : r >= 5 {
+            if c > 0 && b[Rules.index(r, c - 1)] == pawn { return (Rules.index(r, c - 1), 100) }
+            if c < 8 && b[Rules.index(r, c + 1)] == pawn { return (Rules.index(r, c + 1), 100) }
+        }
+
+        // 士（200）：斜一步，且必须在本方九宫内
+        let advisor = Piece.code(Piece.typeAdvisor, side)
+        for d in Rules.diag {
+            let ar = r + d.0, ac = c + d.1
+            if ac < 3 || ac > 5 { continue }
+            if red ? (ar < 7 || ar > 9) : (ar < 0 || ar > 2) { continue }
+            if b[Rules.index(ar, ac)] == advisor { return (Rules.index(ar, ac), 200) }
+        }
+
+        // 象（200）：斜两步，象眼要空，且不过河（红象只在行 5~9，黑象只在行 0~4）
+        let elephant = Piece.code(Piece.typeElephant, side)
+        for d in Rules.diag {
+            let br = r + 2 * d.0, bc = c + 2 * d.1
+            if !Rules.inBoard(br, bc) { continue }
+            if red ? br < 5 : br > 4 { continue }
+            if b[Rules.index(br, bc)] != elephant { continue }
+            if b[Rules.index(r + d.0, c + d.1)] != Piece.empty { continue }
+            return (Rules.index(br, bc), 200)
+        }
+
+        // 马（400）：Rules.horse 是「从马出发」的偏移，攻击 sq 的马在 (r-dr, c-dc)，腿相对马算
+        let horse = Piece.code(Piece.typeHorse, side)
+        for h in Rules.horse {
+            let hr = r - h.0, hc = c - h.1
+            if !Rules.inBoard(hr, hc) { continue }
+            if b[Rules.index(hr, hc)] != horse { continue }
+            let lr = hr + h.2, lc = hc + h.3
+            if !Rules.inBoard(lr, lc) { continue }
+            if b[Rules.index(lr, lc)] != Piece.empty { continue }
+            return (Rules.index(hr, hc), 400)
+        }
+
+        // 炮（450）：必须正好隔一个炮架（第一个碰到的子当架，再碰到的才是炮）
+        let cannon = Piece.code(Piece.typeCannon, side)
+        for d in Rules.dir4 {
+            var tr = r + d.0, tc = c + d.1
+            var screen = false
+            while Rules.inBoard(tr, tc) {
+                let t = b[Rules.index(tr, tc)]
+                if !screen {
+                    if t != Piece.empty { screen = true }
+                } else if t != Piece.empty {
+                    if t == cannon { return (Rules.index(tr, tc), 450) }
+                    break
+                }
+                tr += d.0; tc += d.1
+            }
+        }
+
+        // 车（900）：四个方向碰到的第一个子
+        let rook = Piece.code(Piece.typeRook, side)
+        for d in Rules.dir4 {
+            var ur = r + d.0, uc = c + d.1
+            while Rules.inBoard(ur, uc) {
+                let u = b[Rules.index(ur, uc)]
+                if u != Piece.empty {
+                    if u == rook { return (Rules.index(ur, uc), 900) }
+                    break
+                }
+                ur += d.0; uc += d.1
+            }
+        }
+
+        return nil
+    }
+
+    /// 走 `from → to` 这一手吃子的 SEE 净收益。正数 = 赚，0 = 平换，负数 = 亏本吃。
+    ///
+    /// 算法（自己推的，查到的几个版本索引记不牢、容易写错）：
+    ///   设 u = [u1, u2, …] 为每一步「进攻方用的那颗子」的价值（u1 = 走子方的子）。
+    ///   第 k 步**吃到**的东西价值 G[k]：G[1] = 被吃子的价值，G[k] = u[k-1]。
+    ///   记 f(k) = 第 k 步进攻方的净收益，则 f(n) = G[n]、f(k) = G[k] - max(0, f(k+1))，
+    ///   答案就是 f(1)。
+    ///
+    /// 例（JS 侧有对应的单元测试，两边必须同答案）：
+    ///   车(900)吃兵(100)、被兵吃回来 → u=[900,100]，G=[100,900] → f(1)=100-900 = **-800**
+    ///   兵(100)吃车(900)、没人吃回来 → u=[100]，G=[900] → f(1) = 900
+    ///   车(900)吃车(900)、被兵吃回来 → u=[900,100]，G=[900,900] → f(1)=900-900 = **0**
+    ///
+    /// 棋盘是**取值**传进来的：Swift 数组是写时复制，进函数时并不复制，只有真去改它
+    /// 才复制 90 字节。比原先设想的「逐格记录再还原」简单得多，而且**不可能漏还原** ——
+    /// 调用方的棋盘压根没被碰过。
+    /// 见上面 `pstValue` 的说明：本函数同样放开到 internal 供测试直接断言
+    func seeCapture(_ boardIn: [Int8], _ from: Int, _ to: Int, _ side: Side) -> Int32 {
+        let victim = boardIn[to]
+        if victim == Piece.empty { return 0 }
+
+        var b = boardIn
+        var u: [Int32] = [Engine.pieceValue[Piece.type(b[from])]]
+        b[to] = b[from]
+        b[from] = Piece.empty
+
+        var cur = side.other
+        var guardCount = 0
+        while guardCount < 24 {
+            guardCount += 1
+            guard let att = leastAttacker(b, to, cur) else { break }
+            u.append(att.value)
+            b[to] = b[att.from]
+            b[att.from] = Piece.empty
+            cur = cur.other
+        }
+
+        // G = [被吃子的价值, u1, …, u(n-1)]，从尾部往前取 max(0, ·)
+        var val: Int32 = 0
+        if u.count >= 2 {
+            for k in stride(from: u.count - 2, through: 0, by: -1) {
+                val = u[k] - max(0, val)
+            }
+        }
+        return Engine.pieceValue[Piece.type(victim)] - max(0, val)
+    }
+
+    // MARK: 着法排序
+    //
+    //   TT 着法                                 100,000,000
+    //   好/等吃子（SEE ≥ 0）                     20,000,000 + MVV-LVA
+    //   杀手着法 1 / 2                          15,000,000 / 14,000,000
+    //   安静着法                                10,000,000 + 位置表增量 + 历史
+    //   亏本吃（SEE < 0）                        1,000,000 + SEE
+    //
+    // 两条纪律：
+    //   1. **亏本吃必须降到安静着法之后。** 它的价值是负的，排在前面只会让每个节点都白
+    //      展开一整棵子树去证明「果然亏了」。
+    //   2. **SEE 只在「可能亏」的时候算。** 被吃子比吃子方的子更值钱时（吃大子 / 平换），
+    //      即使被吃回来也不亏，MVV-LVA 就够了 —— 这一条把 SEE 的调用次数砍掉大半，
+    //      因为 SEE 里每一步都要做一次射线扫描，它比排序里其它任何一项都贵。
+
+    private static let scoreTT: Int32 = 100_000_000
+    private static let scoreGoodCap: Int32 = 20_000_000
+    private static let scoreKiller1: Int32 = 15_000_000
+    private static let scoreKiller2: Int32 = 14_000_000
+    private static let scoreQuiet: Int32 = 10_000_000
+    private static let scoreBadCap: Int32 = 1_000_000
+    /// 位置表增量的权重。实测 4 / 8 / 16 三档几乎并列（73.5% / 74.5% / 74.6% 的节点数），
+    /// 取中间的 8 —— 这个常数不值得再调（差别落在局面间的正常波动里）。
+    private static let pstWeight: Int32 = 8
+    /// 历史分数的上限。历史表靠「同一着法反复造成截断」累积、随深度平方增长；
+    /// 完全不封顶会让它盖掉位置表增量（实测不封顶时节点数是 78.2% 对 74.4%）。
+    /// 注：在实测的深度范围内这个上限其实**基本不触发**，它是一条保险丝。
+    private static let histCap: Int32 = 4096
+
+    /// SEE 只在 **ply ≤ 这个值** 的时候算（浅层）。
+    ///
+    /// 为什么不是整棵树都算 —— 实测（`tools/order-fuzz.js --mode time`，150 个随机局面）：
+    /// 整棵树都算 SEE 时，**开局**节点省 16%，但**中局**因为吃子多、SEE 的射线扫描贵，
+    /// 每千节点/秒从 2684 掉到 2177（慢 19%），而中局的节点只省下 5% ——
+    /// 一进一出，固定时间下反而比不改**更浅**（改动前多搜到一层的局面 14:3）。
+    /// 残局几乎不受影响（那里位置表增量才是主角）。
+    ///
+    /// 限制到浅层能保住 SEE 大部分的好处（浅 4 层时开局节点数是 78.2%，整棵树是 77.0%），
+    /// 却把深层的调用全砍掉 —— 深层的节点数占绝大多数，代价主要在那儿。
+    /// 实测浅 4 层的组法比整棵树浅层无关的那两版都更靠前（对改动前 9:5、对浅 1 层 5:1）。
+    ///
+    /// 放开到 internal（而不是 private）是为了让测试**贴着边界两侧**各断言一次：
+    /// ply = 本值要算 SEE、ply = 本值+1 不能算。测试里硬编码 4 的话，
+    /// 以后调这个值，那条断言就会变成在测别的东西、而且照样全绿。
+    static let seeMaxPly = 4
+
+    /// 见上面 `pstValue` 的说明：本函数同样放开到 internal 供测试直接断言顺序
+    func orderMoves(_ b: [Int8], _ moves: [Move], _ ply: Int, _ ttMove: Move?) -> [Move] {
         let k = killers[min(ply, 63)]
-        var scored: [(Int32, Move)] = []
+        // 第三个分量是原始下标：Swift 的 sort 不保证稳定，而 JS 的 sort 是稳定的。
+        // 不加这个「平局按原顺序」，同样的局面在两个引擎里排序会不一样，
+        // 「两端是同一套算法」这条就名存实亡了。
+        var scored: [(Int32, Move, Int)] = []
         scored.reserveCapacity(moves.count)
-        for m in moves {
+        for (i, m) in moves.enumerated() {
             var s: Int32 = 0
             let cap = b[m.to]
             if let t = ttMove, t == m {
-                s = 100_000_000
-            } else if cap != 0 {
-                s = 10_000_000 + Engine.pieceValue[Piece.type(cap)] * 16 - Engine.pieceValue[Piece.type(b[m.from])]
+                s = Engine.scoreTT
+            } else if cap != Piece.empty {
+                let capVal = Engine.pieceValue[Piece.type(cap)]
+                let attVal = Engine.pieceValue[Piece.type(b[m.from])]
+                let mvv = capVal * 16 - attVal
+                if capVal >= attVal || ply > Engine.seeMaxPly {
+                    // 吃大子 / 平换：再差也不会亏，不必花 SEE。
+                    // 深于 seeMaxPly 的节点也走这一支：那里节点数占绝大多数，
+                    // 而 SEE 的射线扫描在最贵的节点上最不划算（理由见 seeMaxPly 的注释）
+                    s = Engine.scoreGoodCap + mvv
+                } else {
+                    seeCalls += 1
+                    let see = seeCapture(b, m.from, m.to, Piece.side(b[m.from]))
+                    s = see >= 0 ? Engine.scoreGoodCap + mvv : Engine.scoreBadCap + see
+                }
             } else if let k0 = k.0, k0 == m {
-                s = 9_000_000
+                s = Engine.scoreKiller1
             } else if let k1 = k.1, k1 == m {
-                s = 8_900_000
+                s = Engine.scoreKiller2
             } else {
-                s = history[m.from * 90 + m.to]
+                let hv = history[m.from * 90 + m.to]
+                s = Engine.scoreQuiet + pstDelta(b, m.from, m.to)
+                    + (hv > Engine.histCap ? Engine.histCap : hv)
             }
-            scored.append((s, m))
+            scored.append((s, m, i))
         }
-        scored.sort { $0.0 > $1.0 }
+        scored.sort { $0.0 != $1.0 ? $0.0 > $1.0 : $0.2 < $1.2 }
         return scored.map { $0.1 }
     }
 
@@ -280,11 +540,120 @@ final class Engine {
         return best
     }
 
+    // MARK: 重复局面（搜索里的「和棋意识」）
+
+    /// 走到搜索根**之前**的棋局历史。
+    ///
+    /// 有了它，引擎才知道哪些局面「已经出现过」—— 走回去按和棋算（0 分）。
+    /// 没有它的时候（P2-1 之前的状态）：引擎不知道自己在绕圈，一盘赢棋会被自己
+    /// 走成三次重复，只能靠对局层兜住判和，等于白送一局。
+    struct SearchHistory {
+        /// 棋局起始局面（与 `Rules.startFEN` 同格式的棋盘串）
+        var startFEN: String
+        /// 从起始局面到搜索根的着法
+        var moves: [Move]
+        var startSide: Side
+
+        init(startFEN: String = Rules.startFEN, moves: [Move], startSide: Side = .red) {
+            self.startFEN = startFEN
+            self.moves = moves
+            self.startSide = startSide
+        }
+
+        /// 从某个局面开始的整局棋（界面里的对局走这条）
+        static func fromStart(_ moves: [Move]) -> SearchHistory {
+            SearchHistory(startFEN: Rules.startFEN, moves: moves, startSide: .red)
+        }
+    }
+
+    /// 当前「不可逆段」上的局面 { 哈希, 这一段是不是从它开始的 }
+    private var repStack: [(h: UInt64, fresh: Bool)] = []
+    /// 段内每个局面出现过几次。用字典是**有意的**：换成每层往回线性扫描，
+    /// 安静残局里一段能有上百手，每个节点都要多扫上百次比较。
+    private var repCount: [UInt64: Int] = [:]
+    /// 进入新的不可逆段时，把上一段的计数表暂存起来（回退时要还回去）
+    private var repSaved: [[UInt64: Int]] = []
+
+    /// 这一手之后，之前的局面还有可能重现吗？吃子 / 走兵 → 不可能（兵只进不退）
+    private static func isIrreversible(_ piece: Int8, _ cap: Int8) -> Bool {
+        cap != 0 || Piece.type(piece) == Piece.typePawn
+    }
+
+    /// 把「根节点 + 它之前的棋局历史」装进路径栈
+    private func repInit(_ history: SearchHistory?) {
+        guard let h = history, !h.moves.isEmpty else {
+            repStack = [(h: hash, fresh: false)]
+            repCount = [hash: 1]
+            repSaved = []
+            return
+        }
+        var b = Rules.parse(h.startFEN)
+        var side = h.startSide
+        var keys: [UInt64] = [computeHash(b, side)]
+        var segs: [Int] = [0]
+        var segStart = 0
+        for m in h.moves {
+            let irrev = Engine.isIrreversible(b[m.from], b[m.to])
+            _ = Rules.makeMove(&b, m)
+            side = side.other
+            if irrev { segStart = keys.count }
+            keys.append(computeHash(b, side))
+            segs.append(segStart)
+        }
+        // 以真实棋盘为准：万一调用方给的历史和棋盘不是同一路棋，也不至于引入假重复
+        keys[keys.count - 1] = hash
+        // 只装「最后一个不可逆段」—— 更早的局面不可能重现了
+        let from = segs[segs.count - 1]
+        repStack = []
+        repCount = [:]
+        repSaved = []
+        for i in from..<keys.count {
+            repStack.append((h: keys[i], fresh: i == from))
+            repCount[keys[i], default: 0] += 1
+        }
+        // 根节点不是 repPush 压进去的，它不需要在下一次 repPop 时还原计数表
+        if !repStack.isEmpty { repStack[0].fresh = false }
+    }
+
+    /// 走子之后把新局面压进路径栈 —— 必须在 doMove **之后**调用（要读新局面）
+    private func repPush(_ b: [Int8], _ m: Move, _ cap: Int8) {
+        let fresh = Engine.isIrreversible(b[m.to], cap)
+        if fresh {
+            repSaved.append(repCount)
+            repCount = [:]
+        }
+        repStack.append((h: hash, fresh: fresh))
+        repCount[hash, default: 0] += 1
+    }
+
+    private func repPop() {
+        guard let e = repStack.popLast() else { return }
+        let c = (repCount[e.h] ?? 0) - 1
+        if c <= 0 { repCount.removeValue(forKey: e.h) } else { repCount[e.h] = c }
+        if e.fresh, let prev = repSaved.popLast() { repCount = prev }
+    }
+
+    /// 当前局面在本段路径上出现过 → 按和棋算（0 分）。
+    ///
+    /// 这里是**两次重复**就判和，比正式的「三次重复」保守一层。搜索里要防的是
+    /// 「双方都愿意重复」导致的无限循环，宁可早判：判早了只会让优势方更主动地躲开
+    /// 循环，不会把赢棋判成和棋。对局层仍然是三次重复才判（P2-1 的 `Rules.adjudicate`），
+    /// **两处不一致是刻意的**。
+    private func repIsDraw() -> Bool {
+        repStack.count > 1 && (repCount[hash] ?? 0) > 1
+    }
+
     // MARK: 主搜索
 
     private func negamax(_ b: inout [Int8], _ side: Side, _ depth: Int, _ alphaIn: Int32, _ beta: Int32, _ ply: Int) -> Int32 {
         checkTime()
         if aborted { return 0 }
+
+        // 重复局面必须在置换表**之前**判。0 分是「相对路径」的结论 —— 同一个局面
+        // 从别的路径搜过来并不等于和棋，把它当普通评分存进置换表会污染后续搜索。
+        // 也因为要提前返回，这里天然不会把 0 写进表里。
+        if ply > 0 && repIsDraw() { return 0 }
+
         nodes += 1
 
         let alphaOrig = alphaIn
@@ -328,6 +697,7 @@ final class Engine {
                 continue
             }
             anyLegal = true
+            repPush(b, m, cap)
 
             var sc: Int32
             if !searchedOne {
@@ -340,6 +710,7 @@ final class Engine {
                 }
             }
             searchedOne = true
+            repPop()
             undo(&b, m, cap)
             if aborted { return 0 }
 
@@ -379,7 +750,13 @@ final class Engine {
         killers = Array(repeating: (nil, nil), count: 64)
         history = [Int32](repeating: 0, count: 90 * 90)
         nodes = 0
+        seeCalls = 0
         aborted = false
+        // 重复局面路径栈每次都从 rootSearch 的 repInit 重建；这里清掉是为了
+        // 「搜完之后不留状态」—— 上一次搜索的路径不该影响下一次。
+        repStack = []
+        repCount = [:]
+        repSaved = []
         // 置换表按槽位残留，键不匹配会被忽略，不清空也安全。
     }
 
@@ -397,13 +774,21 @@ final class Engine {
         return res
     }
 
-    private func rootSearch(board: [Int8], side: Side, maxDepth: Int, timeMs: Int, excluded: [Move]) -> SearchResult {
+    /// - Parameter history: 走到 `board` 为止的着法历史。给了它，引擎才知道哪些局面
+    ///   「已经出现过」→ 走回去按和棋算。不给也能跑，但那样搜索是**没有局面记忆**的，
+    ///   会往循环里走（这正是 P2-2 要修的东西）。
+    private func rootSearch(board: [Int8], side: Side, maxDepth: Int, timeMs: Int,
+                            excluded: [Move], history: SearchHistory?) -> SearchResult {
         var b = board
         hash = computeHash(b, side)
         deadline = nowMs() + UInt64(max(80, timeMs))
+        repInit(history)
 
         var moves = rootMoves(b, side, excluded: excluded)
-        if moves.isEmpty { return SearchResult(move: nil, score: -Engine.mate, depth: 0, nodes: 0) }
+        if moves.isEmpty {
+            repInit(nil)
+            return SearchResult(move: nil, score: -Engine.mate, depth: 0, nodes: 0)
+        }
 
         moves = orderMoves(b, moves, 0, nil)
 
@@ -420,7 +805,9 @@ final class Engine {
 
             for m in moves {
                 let cap = doMove(&b, m)
+                repPush(b, m, cap)
                 let sc = -negamax(&b, side.other, d - 1, -Engine.infinite, -alpha, 1)
+                repPop()
                 undo(&b, m, cap)
                 if aborted { completed = false; break }
                 if sc > localScore { localScore = sc; localBest = m }
@@ -440,30 +827,41 @@ final class Engine {
             if abs(bestScore) > Engine.mate - 1000 { break }
         }
 
-        return SearchResult(move: bestMove, score: bestScore, depth: reached, nodes: nodes)
+        return SearchResult(move: bestMove, score: bestScore, depth: reached, nodes: nodes,
+                            seeCalls: seeCalls)
     }
 
     // MARK: 对外接口（全部串行）
 
-    func search(board: [Int8], side: Side, maxDepth: Int, timeMs: Int, completion: @escaping (SearchResult) -> Void) {
+    func search(board: [Int8], side: Side, maxDepth: Int, timeMs: Int,
+                history: SearchHistory? = nil,
+                completion: @escaping (SearchResult) -> Void) {
         queue.async {
             self.prepare()
-            let r = self.rootSearch(board: board, side: side, maxDepth: maxDepth, timeMs: timeMs, excluded: [])
+            let r = self.rootSearch(board: board, side: side, maxDepth: maxDepth, timeMs: timeMs,
+                                    excluded: [], history: history)
             DispatchQueue.main.async { completion(r) }
         }
     }
 
     /// 同步搜索。仅供测试与需要就地取结果的场景使用 ——
     /// 会阻塞调用线程，界面代码请一律走上面的异步接口。
-    func searchSync(board: [Int8], side: Side, maxDepth: Int, timeMs: Int) -> SearchResult {
+    ///
+    /// - Parameter excluded: 排除掉的着法。多路分析（`topMovesSync`）靠它逐个换着法，
+    ///   测试靠它把「某一手值多少分」单独问出来 —— 只看最佳着法是分不出
+    ///   「这手被判成和棋」和「这手本来就烂」的。
+    func searchSync(board: [Int8], side: Side, maxDepth: Int, timeMs: Int,
+                    excluded: [Move] = [], history: SearchHistory? = nil) -> SearchResult {
         queue.sync {
             self.prepare()
-            return self.rootSearch(board: board, side: side, maxDepth: maxDepth, timeMs: timeMs, excluded: [])
+            return self.rootSearch(board: board, side: side, maxDepth: maxDepth, timeMs: timeMs,
+                                   excluded: excluded, history: history)
         }
     }
 
     /// 同步多路分析，同上
-    func topMovesSync(board: [Int8], side: Side, count: Int, maxDepth: Int, timeMs: Int) -> [CandidateMove] {
+    func topMovesSync(board: [Int8], side: Side, count: Int, maxDepth: Int, timeMs: Int,
+                      history: SearchHistory? = nil) -> [CandidateMove] {
         queue.sync {
             self.prepare()
             var excluded: [Move] = []
@@ -471,7 +869,8 @@ final class Engine {
             let budget = max(400, timeMs)
             for i in 0..<count {
                 let slice = max(300, budget / (count - i))
-                let r = self.rootSearch(board: board, side: side, maxDepth: maxDepth, timeMs: slice, excluded: excluded)
+                let r = self.rootSearch(board: board, side: side, maxDepth: maxDepth, timeMs: slice,
+                                        excluded: excluded, history: history)
                 guard let mv = r.move else { break }
                 out.append(CandidateMove(move: mv, score: r.score, depth: r.depth,
                                          label: Notation.label(board: board, move: mv)))
@@ -491,7 +890,9 @@ final class Engine {
     }
 
     /// 多路分析：给出前 n 个候选着法，供教练点评与「让模型选一个」使用
-    func topMoves(board: [Int8], side: Side, count: Int, maxDepth: Int, timeMs: Int, completion: @escaping ([CandidateMove]) -> Void) {
+    func topMoves(board: [Int8], side: Side, count: Int, maxDepth: Int, timeMs: Int,
+                  history: SearchHistory? = nil,
+                  completion: @escaping ([CandidateMove]) -> Void) {
         queue.async {
             self.prepare()
             var excluded: [Move] = []
@@ -500,7 +901,8 @@ final class Engine {
 
             for i in 0..<count {
                 let slice = max(300, budget / (count - i))
-                let r = self.rootSearch(board: board, side: side, maxDepth: maxDepth, timeMs: slice, excluded: excluded)
+                let r = self.rootSearch(board: board, side: side, maxDepth: maxDepth, timeMs: slice,
+                                        excluded: excluded, history: history)
                 guard let mv = r.move else { break }
                 out.append(CandidateMove(move: mv, score: r.score, depth: r.depth,
                                          label: Notation.label(board: board, move: mv)))
@@ -511,10 +913,13 @@ final class Engine {
         }
     }
 
-    func pickMove(board: [Int8], side: Side, level: SearchLevel, completion: @escaping (SearchResult) -> Void) {
+    func pickMove(board: [Int8], side: Side, level: SearchLevel,
+                  history: SearchHistory? = nil,
+                  completion: @escaping (SearchResult) -> Void) {
         queue.async {
             self.prepare()
-            let res = self.rootSearch(board: board, side: side, maxDepth: level.depth, timeMs: level.timeMs, excluded: [])
+            let res = self.rootSearch(board: board, side: side, maxDepth: level.depth,
+                                      timeMs: level.timeMs, excluded: [], history: history)
 
             guard res.move != nil, level.slack > 0 else {
                 DispatchQueue.main.async { completion(res) }
@@ -526,7 +931,11 @@ final class Engine {
             var candidates: [Move] = []
             for m in legal {
                 let cap = Rules.makeMove(&work, m)
-                let sub = self.rootSearch(board: work, side: side.other, maxDepth: 1, timeMs: 120, excluded: [])
+                // 这一层是「1 步之后的静态分」，只是给入门档挑个不离开最优太远的着法。
+                // 故意不传 history：这里的棋盘是 board + m，而 history 只到 board，
+                // 硬塞进去会把 board 从路径上顶掉，反而可能造出假重复。
+                let sub = self.rootSearch(board: work, side: side.other, maxDepth: 1, timeMs: 120,
+                                          excluded: [], history: nil)
                 Rules.undoMove(&work, m, cap)
                 if res.score - (-sub.score) <= level.slack { candidates.append(m) }
             }

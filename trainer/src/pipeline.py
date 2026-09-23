@@ -31,6 +31,19 @@ from gen_data import REC_SIZE, elapsed_seconds   # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 步骤返回值里的第三个状态：**没产出**。
+#
+# 为什么需要它：`0` 表示成功、非 `0` 表示失败，但还有一种情况两者都不对 ——
+# 缺依赖导致这一步根本没法跑。原来 `stage_handcrafted` 找不到 node 时直接
+# `return 0`，于是：
+#   * 流程打印「完成于 …」，最后一次运行看起来一切正常
+#   * 真正的后果是 results/ 里少一份 05-handcrafted.txt
+#   * 而它是「只看两个数」里的一个（平均丢分），少了它整份产物不可读
+# 这个坑在 Windows 上最隐蔽 —— 生成/训练/导出都成功，只有这一份报告静默缺席。
+#
+# 所以：**「跳过」必须是一个能被上层看见的状态**，不能混进「成功」。
+SKIPPED = -1
+
 # ---------------- 参数（想调就改这里） ----------------
 
 CONFIG = {
@@ -150,11 +163,32 @@ def train_done():
     return False, '已训到第 %d 轮（目标 %d 轮，可续训）' % (ep, want)
 
 
-def _file_done(rel, what):
+def _file_done(rel, what, must_contain=None):
+    """报告文件存在就算完成？不行，还得看它是不是「跑完了」。
+
+    这里挡两种假完成：
+
+    1. **空文件**。`run(..., log_file=...)` 是先 open('w') 把 stdout 重定向成文件、
+       再执行命令的。命令刚启动就崩（缺依赖、路径写错）会留下一个 0 字节文件，
+       光看「存在」就会把这一步永久标成完成。
+    2. **半截文件**。命令跑到一半被杀（Ctrl-C、断电、Windows 自动更新重启）时，
+       文件是「有内容但没结论」的。`must_contain` 用来要求一个只在收尾时才打印的
+       标记，缺了它说明没跑到最后。
+    """
     p = os.path.join(results_dir(), rel)
-    if os.path.isfile(p):
-        return True, '%s 已存在（%s）' % (what, os.path.relpath(p, ROOT))
-    return False, '还没有 %s' % what
+    if not os.path.isfile(p):
+        return False, '还没有 %s' % what
+    if os.path.getsize(p) == 0:
+        return False, '%s 是空文件（上次刚启动就退出了？）' % what
+    if must_contain:
+        try:
+            with open(p, 'r', encoding='utf-8', errors='replace') as f:
+                body = f.read()
+        except Exception as e:
+            return False, '%s 读不出来（%s）' % (what, e)
+        if must_contain not in body:
+            return False, '%s 里没有「%s」，像是跑到一半断了' % (what, must_contain)
+    return True, '%s 已存在（%s）' % (what, os.path.relpath(p, ROOT))
 
 
 def export_done():
@@ -230,11 +264,26 @@ def stage_eval(args):
 
 
 def stage_handcrafted(args):
+    """手写评估对照 + 配对检验。
+
+    ⚠️ 这一步最容易「静默跳过」：它唯一的外部依赖是 node.js，而它在 macOS /
+    Linux 上是常备件、在**全新的 Windows 上经常没有**。所以两条前置检查都必须
+    返回 SKIPPED（不是 0），否则流程会谎报成功、产物里却少一份报告。
+    """
+    pos = os.path.join(CONFIG['results_dir'], 'positions.json')
+    if not os.path.isfile(os.path.join(ROOT, pos)):
+        print('  [未产出] 缺 %s —— 它是上一步「判断力评估」的产物，先跑 eval。' % pos)
+        print('           补跑：python src/pipeline.py run eval craft')
+        return SKIPPED
+
     if not shutil.which('node'):
-        print('  [跳过] 没找到 node.js，手写评估对照跑不了。')
-        print('         装好 Node.js 之后可以单独补跑：')
-        print('           node tests/eval_handcrafted.js results/positions.json results/ranks.json')
-        return 0
+        print('  [未产出] 没找到 node.js，手写评估对照跑不了 —— 这一步没有任何输出。')
+        print('           缺的是 results/05-handcrafted.txt（「平均丢分」那张表就在里面）。')
+        print('           装好 Node.js（https://nodejs.org）之后单独补跑：')
+        print('             python src/pipeline.py run craft')
+        print('           只需 node，不需要引擎、不需要网络。')
+        return SKIPPED
+
     return run(['node', 'tests/eval_handcrafted.js',
                 os.path.join(CONFIG['results_dir'], 'positions.json'),
                 os.path.join(CONFIG['results_dir'], 'ranks.json')],
@@ -242,7 +291,11 @@ def stage_handcrafted(args):
 
 
 def stage_package(args):
-    """把关键产物汇总到 results/，方便打包回传。这一步很便宜，每次都跑。"""
+    """把关键产物汇总到 results/，并**逐项核对清单**。
+
+    这一步很便宜，每次都跑。核对放在这里是因为它是流程的最后一站：
+    前面任何一步静默缺席，都会在这里被点名，而不是等人回去 ls 才发现。
+    """
     rd = results_dir()
     os.makedirs(rd, exist_ok=True)
     for src in (net_path(),
@@ -251,8 +304,13 @@ def stage_package(args):
         if os.path.isfile(src):
             shutil.copy2(src, rd)
     print('  已把网络、训练日志、checkpoint 复制到 %s' % os.path.relpath(rd, ROOT))
-    for name in sorted(os.listdir(rd)):
-        print('    %s' % name)
+    print()
+    missing = print_artifact_manifest()
+    if missing:
+        print()
+        print('  ⚠️ 上面标「缺」的 %d 项没有产出。流程本身没报错，但产物不完整 —— '
+              '别把它当成一次成功的运行。' % len(missing))
+        return SKIPPED
     return 0
 
 
@@ -265,9 +323,54 @@ STAGES = [
     ('export', '导出 .xqnn + 复现校验',     stage_export,     export_done,     False),
     ('verify', '拟合质量报告',              stage_verify,     lambda: _file_done('03-verify.txt', '拟合报告'), False),
     ('eval',  '判断力评估（500 局面）',     stage_eval,       lambda: _file_done('04-strength.txt', '判断力报告'), False),
-    ('craft', '手写评估对照 + 配对检验',    stage_handcrafted, lambda: _file_done('05-handcrafted.txt', '对照报告'), False),
+    ('craft', '手写评估对照 + 配对检验',    stage_handcrafted,
+              # 这份报告的结论在最后一段才打印，所以要求必须出现「名次已写入」这个收尾标记：
+              # 只看「文件存在」的话，跑到一半断掉的文件也会被当成完成。
+              lambda: _file_done('05-handcrafted.txt', '对照报告', must_contain='名次已写入'), False),
     ('pack',  '汇总产物到 results/',        stage_package,    lambda: (False, '每次都跑'),        True),
 ]
+
+# results/ 里「一份完整产物」应该有的东西。
+#
+# 这是从一次真实事故里总结的：Windows 上长跑完把 results/ 打包回传，看起来
+# 一切正常，实际上 05-handcrafted.txt 静默缺席（见 SKIPPED 的注释）。
+# 判断依据不能是「流程有没有报错」，只能是**清单逐项核对**。
+ARTIFACT_MANIFEST = [
+    ('01-dataset-info.txt',    '数据规模统计'),
+    ('02-export.txt',          '导出 .xqnn 的复现校验'),
+    ('03-verify.txt',          '拟合质量报告'),
+    ('04-strength.txt',        '判断力评估（平均名次 / 平均丢分）'),
+    ('05-handcrafted.txt',     '手写评估对照 + 配对检验'),
+    ('positions.json',         '评估用的局面（craft 的输入）'),
+    ('ranks.json',             '每个候选的名次（craft 的产物）'),
+    (CONFIG['net_name'],       '网络本身'),
+    ('ckpt.pt',                'checkpoint'),
+    ('train.log',              '训练日志'),
+]
+
+
+def artifact_manifest():
+    """逐项核对 results/，返回 (缺失列表, 齐备列表)。"""
+    rd = results_dir()
+    missing, present = [], []
+    for name, what in ARTIFACT_MANIFEST:
+        p = os.path.join(rd, name)
+        if os.path.isfile(p) and os.path.getsize(p) > 0:
+            present.append((name, what))
+        else:
+            missing.append((name, what))
+    return missing, present
+
+
+def print_artifact_manifest():
+    """把清单打出来。缺了哪一项就直接点名 —— 不靠人去 ls 数文件个数。"""
+    missing, present = artifact_manifest()
+    print('  产物清单（results/，共 %d 项，应有 %d 项）'
+          % (len(present) + len(missing), len(ARTIFACT_MANIFEST)))
+    for name, what in ARTIFACT_MANIFEST:
+        mark = '缺  ' if (name, what) in missing else 'OK  '
+        print('    %s %-22s %s' % (mark, name, what))
+    return missing
 
 
 def cmd_status():
@@ -279,6 +382,25 @@ def cmd_status():
         mark = 'OK  ' if (done and not always) else '待跑'
         print('  [%d/%d] %-8s %-26s %s' % (i, len(STAGES), mark, title, detail))
     print('=' * 68)
+
+    # 前置依赖：缺了就提前说，别等跑到那一步才发现（尤其 node 只在 craft 用到）
+    warns = []
+    if not shutil.which('node'):
+        warns.append('node.js 不在 PATH —— 「手写评估对照」这一步会没有产出，'
+                     '装好 Node.js 后补跑：python src/pipeline.py run craft')
+    if warns:
+        print('  ⚠️ 前置依赖：')
+        for w in warns:
+            print('     %s' % w)
+        print('=' * 68)
+
+    # 产物清单：这才是「跑成功了没有」的最终依据
+    missing = print_artifact_manifest()
+    print('=' * 68)
+    if missing:
+        print('  ⚠️ 产物不完整：缺 %d 项（见上面的「缺」）。' % len(missing))
+        print('=' * 68)
+
     print('  已完成的步骤会被跳过；要全部重跑加 --fresh，要指定步骤就写 key：')
     print('    python src/pipeline.py run --fresh')
     print('    python src/pipeline.py run gen train')
@@ -294,6 +416,7 @@ def cmd_run(args):
 
     os.makedirs(results_dir(), exist_ok=True)
     ran = skipped = 0
+    incomplete = []          # 缺依赖导致没产出的步骤 —— 不是失败，但绝不能算成功
     t0 = time.time()
     for i, (key, title, fn, check, always) in enumerate(STAGES, 1):
         if key not in wanted:
@@ -313,6 +436,11 @@ def cmd_run(args):
         print('  状态：%s' % detail)
         print('  开始于 %s' % time.strftime('%H:%M:%S'))
         rc = fn(args)
+        if rc == SKIPPED:
+            # 关键：**不能**走到下面的「完成于」。这一步什么都没产出。
+            print('  未产出（见上面的原因）—— 这一步没有结果，不要当成成功。')
+            incomplete.append((key, title))
+            continue
         if rc != 0:
             print()
             print('=' * 68)
@@ -327,10 +455,33 @@ def cmd_run(args):
         print('  完成于 %s' % time.strftime('%H:%M:%S'))
         ran += 1
 
+    # ---------- 收尾：这一步才算真正的「验收」 ----------
     print()
     print('=' * 68)
-    print('全部完成：跑了 %d 步，跳过 %d 步，用时 %.1f 分钟'
+    print('流程结束：跑了 %d 步，跳过 %d 步，用时 %.1f 分钟'
           % (ran, skipped, (time.time() - t0) / 60))
+    print('=' * 68)
+
+    missing = print_artifact_manifest()
+    print()
+    print('=' * 68)
+
+    if incomplete or missing:
+        # 以前这里会打印「全部完成」并返回 0 —— 哪怕 results/ 少一份报告。
+        # 产物不全的运行**必须**是失败状态，否则打包回传的人无从判断。
+        print('⚠️  这次运行**不算成功**：')
+        for key, title in incomplete:
+            print('    · 步骤「%s」(%s) 没有产出' % (title, key))
+        for name, what in missing:
+            print('    · 产物缺 %s（%s）' % (name, what))
+        print()
+        print('  按上面每条的具体提示补齐后，重跑本脚本即可（已完成的会自动跳过）：')
+        if any(k == 'craft' for k, _ in incomplete):
+            print('    装好 Node.js，然后：python src/pipeline.py run craft')
+        print('=' * 68)
+        return 3
+
+    print('全部完成，且 results/ 产物清单 %d 项齐全。' % len(ARTIFACT_MANIFEST))
     print('产物目录：%s' % os.path.relpath(results_dir(), ROOT))
     print('=' * 68)
     return 0

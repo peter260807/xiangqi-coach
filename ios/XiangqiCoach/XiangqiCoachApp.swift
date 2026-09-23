@@ -38,7 +38,22 @@ struct RootView: View {
             .sheet(isPresented: $showSettings) {
                 SettingsView(config: AIConfig.shared, archive: archive)
             }
+            .alert(pendingTitle, isPresented: pendingShown, presenting: game.pendingConfirm) { kind in
+                Button("取消", role: .cancel) {}
+                Button(kind.confirmLabel, role: .destructive) { game.confirmPending() }
+            } message: { kind in
+                Text(kind.message)
+            }
             .onAppear { applyLaunchOverrides() }
+    }
+
+    /// 二次确认弹窗挂在**根**上，而不是挂进「对弈 / 训练」各自的页面里：
+    /// TabView 的三个页面是同时存在的，挂进页面会出现同一个弹窗被两个页面各弹一次。
+    private var pendingTitle: String { game.pendingConfirm?.title ?? "" }
+
+    private var pendingShown: Binding<Bool> {
+        Binding(get: { game.pendingConfirm != nil },
+                set: { if !$0 { game.pendingConfirm = nil } })
     }
 
     /// 三个页面。单独抽出来是为了按系统版本套不同样式
@@ -63,6 +78,7 @@ struct RootView: View {
     /// 再给个 `SIMCTL_CHILD_START_DEMO=1` 就自动开始打谱演示。
     private func applyLaunchOverrides() {
         let env = ProcessInfo.processInfo.environment
+        applyConfirmHook(env)
         guard let sid = env["START_SCENE"],
               let scene = SceneCatalog.all(game.library).first(where: { $0.id == sid })
         else { return }
@@ -70,6 +86,21 @@ struct RootView: View {
         if env["START_DEMO"] == "1" {
             game.startDemo()
             game.demoToggle()   // 顺手开始播放，截图才能拍到演示中间的画面
+        }
+    }
+
+    /// 截图用：直接把二次确认弹窗调出来（START_CONFIRM_RESTART / START_CONFIRM_SCENE）。
+    ///
+    /// 手数取一个非零值 —— 真实场景下走到这一步必然是「这盘棋有棋可丢」，
+    /// 空盘根本不会弹框，所以 0 手反而是不可能出现的画面。
+    private func applyConfirmHook(_ env: [String: String]) {
+        let moves = max(game.history.count, 12)
+        let all = SceneCatalog.all(game.library)
+        if env["START_CONFIRM_RESTART"] == "1" {
+            game.pendingConfirm = .restart(moves: moves, title: game.scene.title)
+        } else if env["START_CONFIRM_SCENE"] == "1",
+                  let target = all.first(where: { $0.kind == .mate }) ?? all.first {
+            game.pendingConfirm = .switchScene(scene: target, moves: moves)
         }
     }
 }
