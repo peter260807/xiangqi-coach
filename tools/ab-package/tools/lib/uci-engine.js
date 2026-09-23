@@ -53,6 +53,23 @@ class UciEngine {
       if (process.env.MATCH_DEBUG) process.stderr.write('[err] ' + d.toString().slice(0, 200));
     });
     this.proc.on('error', (e) => { this.startError = e; });
+    /* ⚠️ 引擎**自己退出**时必须立刻把等待者叫醒。
+     *
+     * Pikafish 遇到它认为非法的局面会打印
+     *   `info string CRITICAL ERROR: ... Reason: Unsupported position. ...`
+     * 然后**直接结束进程**（实测：库里 s2 那个 3 个黑士的局面）。
+     * 没有这个监听的话，waitFor 会一直等到它自己的超时 —— 而超时是按 movetime 折算的，
+     * 给了 1 小时 movetime 就等于等 20 小时。现象是「任务静默卡住、零输出、零报错」，
+     * 本次因此白烧了 40 分钟。把子进程最后几行带上，报错就能直接指到原因。 */
+    this.proc.on('exit', (code, signal) => {
+      this.exited = { code, signal };
+      const tail = this.buf.slice(-4).join(' | ');
+      const err = new Error('引擎进程已退出（code=' + code + ' signal=' + signal + '）'
+        + (tail ? '  最后输出：' + tail : ''));
+      const ws = this.waiters.slice();
+      this.waiters = [];
+      for (const w of ws) { clearTimeout(w.timer); w.reject(err); }
+    });
 
     return this.send('uci')
       .then(() => this.waitFor((l) => l === 'uciok'))
@@ -90,6 +107,10 @@ class UciEngine {
 
   waitFor(pred, timeoutMs = 120000) {
     return new Promise((resolve, reject) => {
+      if (this.exited) {
+        reject(new Error('引擎进程已经退出了，不可能再等到 ' + pred.toString()));
+        return;
+      }
       const w = { pred, resolve, reject };
       w.timer = setTimeout(() => {
         this.waiters = this.waiters.filter((x) => x !== w);
@@ -129,8 +150,10 @@ class UciEngine {
        本项目引擎内部把 depth 当上限、把时间当硬截止，而 movetime 缺省是 0，
        会被兜底成 80ms —— 于是「go depth 8」其实只搜 80 毫秒，
        量出来的节点数看着很正常，其实第 5 层就被掐了。 */
+    const mpv = Math.max(1, limit.multipv || 1);
     const cmd = limit.depth > 0
       ? `go depth ${limit.depth}` + (limit.movetime ? ` movetime ${limit.movetime}` : '')
+        + (mpv > 1 ? ` multipv ${mpv}` : '')
       : `go movetime ${Math.max(1, limit.movetime || 300)}`;
     const timeout = Math.max(20000, (limit.movetime || 1000) * 20);
 
@@ -139,18 +162,40 @@ class UciEngine {
       .then(() => this.waitFor((l) => l.startsWith('bestmove'), timeout))
       .then((line) => {
         const best = line.split(/\s+/)[1];
-        let depth = 0, nodes = 0, timeMs = 0, score = 0;
+        const num = (l, key) => {
+          const m = l.match(new RegExp(' ' + key + ' (-?\\d+)'));
+          return m ? parseInt(m[1], 10) : 0;
+        };
+        /* 多路候选：`multipv N` 会为每个候选单独发一行 info，**第一行才是最佳着法**。
+           下面那个「循环覆盖」的老写法只对单行 info 成立 —— 多路时它会把最后一路的
+           分数当成最佳着法的分，静默出错。所以显式按 multipv 号收一份。 */
+        const candidates = [];
         for (const l of this.infoLines) {
-          const g = (key) => {
-            const m = l.match(new RegExp(' ' + key + ' (-?\\d+)'));
-            return m ? parseInt(m[1], 10) : 0;
-          };
-          depth = g('depth') || depth;
-          nodes = g('nodes') || nodes;
-          timeMs = g('time') || timeMs;
-          score = g('score cp') || score;
+          const k = num(l, 'multipv');
+          if (k >= 1) {
+            const pv = l.match(/ pv (\S+)/);
+            candidates.push({ multipv: k, move: pv ? pv[1] : null,
+                              score: num(l, 'score cp'), depth: num(l, 'depth') });
+          }
         }
-        return { best, depth, nodes, timeMs, score };
+        candidates.sort((x, y) => x.multipv - y.multipv);
+
+        let depth = 0, nodes = 0, timeMs = 0, score = 0, scoreMate = null;
+        /* 单路（或引擎不发 multipv 字段）时等价于原来的行为 */
+        const src = candidates.length
+          ? this.infoLines.filter((l) => num(l, 'multipv') === 1)
+          : this.infoLines;
+        for (const l of src) {
+          depth = num(l, 'depth') || depth;
+          nodes = num(l, 'nodes') || nodes;
+          timeMs = num(l, 'time') || timeMs;
+          score = num(l, 'score cp') || score;
+          /* 杀棋是 `score mate N` 而不是 `score cp N` —— 不打标记的话上面那行
+             会把它读成 0，于是「将死」在数据里看起来和「完全均势」一模一样。 */
+          const mm = l.match(/ score mate (-?\d+)/);
+          if (mm) scoreMate = parseInt(mm[1], 10);
+        }
+        return { best, depth, nodes, timeMs, score, scoreMate, candidates };
       });
   }
 

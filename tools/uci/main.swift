@@ -183,6 +183,8 @@ func perft(_ board: inout [Int8], _ side: Side, _ depth: Int) -> UInt64 {
 struct GoLimit {
     var depth: Int = 64
     var movetime: Int = 0
+    /// 要几路候选。1 = 只要最佳着法（默认，与旧行为完全一致）
+    var multipv: Int = 1
 }
 
 func parseGo(_ tokens: [String], side: Side) -> GoLimit {
@@ -194,6 +196,7 @@ func parseGo(_ tokens: [String], side: Side) -> GoLimit {
         switch tokens[i] {
         case "depth":      limit.depth = value ?? limit.depth; i += 2
         case "movetime":   limit.movetime = value ?? 0; i += 2
+        case "multipv":    limit.multipv = max(1, value ?? 1); i += 2
         case "wtime":      wtime = value ?? 0; i += 2
         case "btime":      btime = value ?? 0; i += 2
         case "movestogo":  movestogo = value ?? 0; i += 2
@@ -245,6 +248,42 @@ while let raw = readLine(strippingNewline: true) {
         let limit = parseGo(Array(tokens.dropFirst()), side: session.side)
         let start = DispatchTime.now().uptimeNanoseconds
         Engine.shared.resetForTesting()   // 每一手都从干净的置换表开始，A/B 才公平
+
+        /* multipv = 1 时走原路径，**一字不改** —— 对局台全靠这条，不能因为加功能
+           引入任何行为差异。 */
+        if limit.multipv > 1 {
+            /* 逐个排除已选着法重搜，每一次都用**同一个固定深度**。
+               这里刻意不用 topMovesSync：它把时间预算按候选数切片，第 2、3 个候选
+               会搜得更浅，候选之间的分数就没法比 —— 而离线预计算要的正是「同深度
+               的前 N 个候选」。
+               排除只作用在根节点，所以循环之间复用置换表是正确的（深层节点的分数
+               与根节点的排除无关）。 */
+            var excluded: [Move] = []
+            var picked: [(move: Move, score: Int32, depth: Int, nodes: Int)] = []
+            for _ in 0..<limit.multipv {
+                let r = Engine.shared.searchSync(board: session.board, side: session.side,
+                                                 maxDepth: limit.depth, timeMs: limit.movetime,
+                                                 excluded: excluded, history: session.searchHistory)
+                guard let mv = r.move else { break }
+                picked.append((mv, r.score, r.depth, r.nodes))
+                excluded.append(mv)
+                if abs(r.score) > Engine.mate - 1000 { break }   // 已是杀棋，再找没有意义
+            }
+            let spentMs = Int((DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
+            guard let best = picked.first?.move else {
+                say("bestmove 0000")
+                continue
+            }
+            for (k, p) in picked.enumerated() {
+                say("info depth \(p.depth) multipv \(k + 1) score cp \(p.score)"
+                    + " nodes \(p.nodes) time \(spentMs)"
+                    + " pv \(moveName(p.move))")
+            }
+            say("info string 中文记谱 \(Notation.label(board: session.board, move: best))")
+            say("bestmove \(moveName(best))")
+            continue
+        }
+
         let result = Engine.shared.searchSync(board: session.board, side: session.side,
                                              maxDepth: limit.depth, timeMs: limit.movetime,
                                              history: session.searchHistory)
