@@ -75,3 +75,9 @@ tools/net-in-engine/engine.js
 
 # 对局台用的 UCI 前端编译产物（tools/uci/run.sh 随时可重新生成）
 tools/uci/build/
+
+# 对局台的运行产物：在 Windows 上跑出来、再拷回来的
+# ab-result-*.txt 是可读报告，ab-progress-*.jsonl 是逐局日志（支持断点续跑）
+# 有价值的那几批会显式归档到 tools/ab-package/results/
+tools/ab-package/ab-result-*.txt
+tools/ab-package/ab-progress-*.jsonl

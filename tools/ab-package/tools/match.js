@@ -34,13 +34,23 @@
  *                      要量棋力请设 4~8，让每对的起手局面都不同（同一对内仍相同）
  *   --max-ply <n>      单局手数上限（默认 200）
  *   --seed <n>         开局的取用顺序（默认 1）
+ *   --gamelog <路径>    把每局结果**边跑边落盘**（JSONL），支持中断后续跑
+ *   --fresh            忽略已有 gamelog，从第 1 局重来
  *   --verbose          打印每局的着法（中文记谱）
+ *
+ * 断点续跑：给了 `--gamelog` 时，每局结束就把结果 append + fsync 落盘；
+ * 再次启动发现该文件存在，就**跳过已完成的局**接着跑，最后按全部局汇总。
+ * 每局的起手局面只由「对局序号」决定（开局取用顺序 + 随机着法种子都只依赖它），
+ * 所以续跑时第 N 局与第一次跑时的第 N 局是同一个局面 —— 断点不会错位。
+ * 配置变了（每手时间 / 开局数 / 随机手数 / 引擎文件）会**拒绝续跑**，
+ * 因为把两种配置的局混在一起汇总，得到的 Elo 没有意义。
  */
 
 'use strict';
 
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const { UciEngine } = require('./lib/uci-engine.js');
 
@@ -424,9 +434,53 @@ function parseArgs() {
     randomPlies: parseInt(get('random-plies', '0'), 10),
     maxPly: parseInt(get('max-ply', '200'), 10),
     seed: parseInt(get('seed', '1'), 10),
+    gamelog: get('gamelog', null),
+    fresh: a.includes('--fresh'),
     perft: parseInt(get('perft', '0'), 10),
     verbose: a.includes('--verbose'),
   };
+}
+
+/* ---------- 断点续跑：每局结果边跑边落盘 ---------- */
+
+/** 引擎文件指纹。续跑时要确认「引擎没被换过」—— 否则两种版本的对局会被混在一起汇总。 */
+function specFingerprint(spec) {
+  let p = null;
+  if (spec.startsWith('js:')) p = path.resolve(ROOT, spec.slice(3));
+  else if (spec === 'js') p = path.join(ROOT, 'web/js/engine.js');
+  else if (spec.startsWith('uci:')) p = path.resolve(ROOT, spec.slice(4));
+  if (!p || !fs.existsSync(p)) return null;
+  try {
+    return crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex').slice(0, 16);
+  } catch (e) { return null; }
+}
+
+/**
+ * 读 gamelog。
+ *
+ * 两处刻意容错，都是为了「进程被强杀 / 机器重启」这种真实场景：
+ *   - 最后一行大概率写到一半，JSON.parse 会失败 —— 跳过它，不要整个文件报废
+ *   - 只认「从第 1 局开始连续」的那一段。中间缺局说明文件被动过，
+ *     接着往后跑会让「第 N 局」与实际局面错位，那比重跑更糟
+ */
+function loadGamelog(file) {
+  const out = { header: null, games: [], junk: 0, dropped: 0 };
+  if (!fs.existsSync(file)) return out;
+  for (const raw of fs.readFileSync(file, 'utf8').split('\n')) {
+    const s = raw.trim();
+    if (!s) continue;
+    let o;
+    try { o = JSON.parse(s); } catch (e) { out.junk++; continue; }
+    if (o && o._header) out.header = o;
+    else if (o && typeof o.g === 'number') out.games.push(o);
+    else out.junk++;
+  }
+  out.games.sort((x, y) => x.g - y.g);
+  let k = 0;
+  while (k < out.games.length && out.games[k].g === k + 1) k++;
+  out.dropped = out.games.length - k;
+  out.games = out.games.slice(0, k);
+  return out;
 }
 
 async function main() {
@@ -450,6 +504,52 @@ async function main() {
 
   const openings = buildOpenings(cfg.openings, cfg.openPlies);
   const games = Math.max(2, cfg.games);
+
+  /* ---- 断点续跑：先读日志，决定从第几局开始 ---- */
+  let glogFd = null;
+  let doneGames = [];
+  let resumeFrom = 0;
+  if (cfg.gamelog) {
+    const file = path.resolve(ROOT, cfg.gamelog);
+    if (cfg.fresh && fs.existsSync(file)) {
+      fs.unlinkSync(file);
+      console.log(`  --fresh：已删除旧日志 ${path.relative(ROOT, file)}`);
+    }
+    const log = loadGamelog(file);
+    const fp = {
+      msA: cfg.msA, msB: cfg.msB, openings: cfg.openings, openPlies: cfg.openPlies,
+      randomPlies: cfg.randomPlies, seed: cfg.seed, maxPly: cfg.maxPly,
+      a: cfg.a, b: cfg.b, fpA: specFingerprint(cfg.a), fpB: specFingerprint(cfg.b),
+    };
+    if (log.header) {
+      const diff = Object.keys(fp).filter((k) => String(log.header[k]) !== String(fp[k]));
+      if (diff.length) {
+        console.error('  拒绝续跑：日志里的配置与本次不一致 ——');
+        for (const k of diff) console.error(`    ${k}：日志 ${log.header[k]} / 本次 ${fp[k]}`);
+        console.error('  把两种配置的对局混在一起汇总，得到的 Elo 没有意义。');
+        console.error('  真要重来请加 --fresh（会删掉旧日志）。');
+        process.exit(3);
+      }
+    }
+    glogFd = fs.openSync(file, 'a');
+    if (!log.header) {
+      fs.writeSync(glogFd, JSON.stringify(Object.assign({ _header: 1 }, fp, { games })) + '\n');
+      fs.fsyncSync(glogFd);
+    }
+    doneGames = log.games.slice(0, games);
+    resumeFrom = doneGames.length;
+    if (resumeFrom > 0) {
+      console.log(`  断点续跑：${path.relative(ROOT, file)} 里已有 ${resumeFrom} 局，`
+        + `从第 ${resumeFrom + 1} 局继续`
+        + (log.junk ? `（跳过 ${log.junk} 行残损记录）` : '')
+        + (log.dropped ? `，另有 ${log.dropped} 条不连续记录被忽略` : ''));
+    } else {
+      console.log(`  逐局落盘：${path.relative(ROOT, file)}（中断后重跑本脚本即可续上）`);
+    }
+    if (resumeFrom >= games) {
+      console.log(`  日志里已有 ${resumeFrom} 局，本次要求 ${games} 局 —— 没有新局要跑，直接汇总。`);
+    }
+  }
 
   console.log('='.repeat(72));
   console.log('对局台：A vs B');
@@ -479,10 +579,28 @@ async function main() {
   const tally = { a: 0, b: 0, draw: 0 };
   const reasons = {};
   const broken = [];
+  const sumD = { a: 0, b: 0 };   /* 层数之和，用于按**全部**局（含续跑继承的）算平均 */
+  const sumN = { a: 0, b: 0 };
   let elapsed = 0;
   const t0 = Date.now();
 
+  /* 把一局的记录累加进统计。续跑继承的局与新跑的局都走这一条路径 ——
+     两条路各写一遍累加逻辑，迟早会漏掉某个计数器。 */
+  const accum = (rec) => {
+    if (rec.result === 'a') tally.a++;
+    else if (rec.result === 'b') tally.b++;
+    else tally.draw++;
+    perGame.push(rec.result === 'a' ? 1 : rec.result === 'b' ? 0 : 0.5);
+    reasons[rec.reason] = (reasons[rec.reason] || 0) + 1;
+    if (rec.prefix) starts.add(rec.prefix);
+    if (rec.broken) broken.push(`第 ${rec.g} 局：${rec.reason}`);
+    sumD.a += rec.dA || 0; sumN.a += rec.nA || 0;
+    sumD.b += rec.dB || 0; sumN.b += rec.nB || 0;
+  };
+
   for (let g = 0; g < games; g++) {
+    if (g < resumeFrom) { accum(doneGames[g]); continue; }
+
     const pair = Math.floor(g / 2);
     const opening = openings[(pair + cfg.seed) % openings.length];
     await engines.a.newGame();
@@ -494,13 +612,22 @@ async function main() {
 
     const aIsRed = g % 2 === 0;
     const aColor = aIsRed ? '红' : '黑';
-    let result, score;
-    if (r.winner === 'a') { tally.a++; result = 'A 胜'; score = 1; }
-    else if (r.winner === 'b') { tally.b++; result = 'B 胜'; score = 0; }
-    else { tally.draw++; result = '和棋'; score = 0.5; }
-    perGame.push(score);
-    reasons[r.reason] = (reasons[r.reason] || 0) + 1;
-    if (r.broken) broken.push(`第 ${g + 1} 局：${r.reason}`);
+    const result = r.winner === 'a' ? 'A 胜' : r.winner === 'b' ? 'B 胜' : '和棋';
+
+    /* 先落盘、再打印。反过来的话，一次崩溃就可能出现
+       「屏幕上看到了这局、日志里没有」—— 续跑时它会再下一遍，白等 30 秒。 */
+    const rec = {
+      g: g + 1, aIsRed, result: r.winner === 'a' ? 'a' : r.winner === 'b' ? 'b' : 'd',
+      reason: r.reason, ply: r.ply, prefix: r.prefix.join(' '),
+      dA: r.stats.a.depth, nA: r.stats.a.n,
+      dB: r.stats.b.depth, nB: r.stats.b.n,
+      broken: !!r.broken,
+    };
+    if (glogFd !== null) {
+      fs.writeSync(glogFd, JSON.stringify(rec) + '\n');
+      fs.fsyncSync(glogFd);
+    }
+    accum(rec);
 
     const avg = (s) => (s.n ? (s.depth / s.n).toFixed(1) : '—');
     rows.push({
@@ -516,6 +643,7 @@ async function main() {
       console.log('        ' + line);
     }
   }
+  if (glogFd !== null) fs.closeSync(glogFd);
 
   const n = perGame.length;
   const scoreA = perGame.reduce((x, y) => x + y, 0) / n;
@@ -527,6 +655,9 @@ async function main() {
   console.log('='.repeat(72));
   console.log(`  A ${tally.a} 胜 / ${tally.draw} 和 / ${tally.b} 负　（共 ${n} 局）`);
   console.log(`  A 的得分率：${(scoreA * 100).toFixed(1)}%`);
+  const avgAll = (t) => (sumN[t] ? (sumD[t] / sumN[t]).toFixed(2) : '—');
+  console.log(`  平均层数：A ${avgAll('a')} / B ${avgAll('b')}`
+    + (resumeFrom ? `　（含续跑继承的 ${resumeFrom} 局）` : ''));
 
   /* 自证：报告「真正不同的起手局面有几组」。
      对局台是确定性的，若开局不随机，名义局数会远大于独立样本数 ——
