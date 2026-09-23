@@ -26,8 +26,12 @@
  *   --ms-a / --ms-b    分别指定两边的思考时间（做「时间预算」A/B 时用）
  *   --depth            改成固定深度（不用时限）—— 测「同深度下评估质量」时才用
  *   --games <n>        总局数（默认 8；偶数才会两边执先次数相同）
- *   --openings <n>     用开局库前 n 个开局（默认 4，0 表示全从标准开局开始）
- *   --open-plies <n>   每个开局先摆前 n 手（默认 6）
+ *   --openings <n>     用开局库前 n 个开局（默认 8，0 表示全从标准开局开始）
+ *   --open-plies <n>   每个开局先摆前 n 手（默认 8）
+ *   --random-plies <n> 开局之后各走 n 手**随机合法着法**（默认 0 = 不随机）
+ *                      ⚠️ 不随机的话，一对里的两局共用同一开局，实际不同的棋
+ *                      只有「开局数 x 2」盘 —— 跑 1400 局也只是把它重放。
+ *                      要量棋力请设 4~8，让每对的起手局面都不同（同一对内仍相同）
  *   --max-ply <n>      单局手数上限（默认 200）
  *   --seed <n>         开局的取用顺序（默认 1）
  *   --verbose          打印每局的着法（中文记谱）
@@ -56,10 +60,18 @@ function uciToIdx(s) {
 
 /* ---------- 引擎适配层 ---------- */
 
-/** 网页版 JS 引擎：进程内直接调，不用起子进程 */
+/** 网页版 JS 引擎：进程内直接调，不用起子进程。
+ *
+ *  可以指定 engine.js 的路径 —— 用来对比**两个 JS 版本**。
+ *  这条路径是为「机器上没有 Swift 编译器」准备的（例如 Windows）：
+ *  把旧版 engine.js 拷成 engine-baseline.js，就能在那边跑 A/B，
+ *  不必先装 Swift 工具链。 */
 class JsEngine {
-  constructor() {
-    this.name = 'JS 引擎（web/js/engine.js）';
+  constructor(jsPath) {
+    this.XQ = jsPath ? require(path.resolve(ROOT, jsPath)) : XQ;
+    this.name = jsPath
+      ? 'JS 引擎（' + path.relative(ROOT, path.resolve(ROOT, jsPath)) + '）'
+      : 'JS 引擎（web/js/engine.js）';
     this.board = null;
     this.side = 'r';
     this.idx = [];       // 内部索引形式的着法历史，给「重复局面判和」用
@@ -68,14 +80,14 @@ class JsEngine {
   newGame() { return Promise.resolve(); }
   /** 把 UCI 着法历史重放一遍，得到当前局面 —— 接口和 UCI 引擎保持一致 */
   sync(uciMoves) {
-    this.board = XQ.parseBoard(XQ.START);
+    this.board = this.XQ.parseBoard(this.XQ.START);
     this.side = 'r';
     this.idx = [];
     for (const u of uciMoves) {
       const from = uciToIdx(u.slice(0, 2)), to = uciToIdx(u.slice(2, 4));
-      XQ.makeMove(this.board, [from, to]);
+      this.XQ.makeMove(this.board, [from, to]);
       this.idx.push([from, to]);
-      this.side = XQ.other(this.side);
+      this.side = this.XQ.other(this.side);
     }
   }
   async move(uciMoves, limit, side) {
@@ -87,8 +99,10 @@ class JsEngine {
     // 第 6 个参数是着法历史：没有它，搜索不知道哪些局面已经出现过，
     // 优势时会把「绕圈」当成正分继续走。UCI 那边走的是 position+go 的历史，
     // 这里得自己把同一份东西喂进去，两边才可比。
-    const r = XQ.searchRoot(this.board, toMove, 99, Math.max(1, limit.movetime || 300), null, this.idx);
-    return { uci: r.move ? idxToUci(r.move[0]) + idxToUci(r.move[1]) : null, depth: r.depth, nodes: r.nodes };
+    const r = this.XQ.searchRoot(this.board, toMove, 99,
+                                 Math.max(1, limit.movetime || 300), null, this.idx);
+    return { uci: r.move ? idxToUci(r.move[0]) + idxToUci(r.move[1]) : null,
+             depth: r.depth, nodes: r.nodes };
   }
   quit() {}
 }
@@ -124,7 +138,14 @@ class UciSpec {
 }
 
 function makeEngine(spec) {
-  return spec === 'js' ? new JsEngine() : new UciSpec(spec);
+  if (spec === 'js') return new JsEngine();
+  // js:<路径>：用指定的 engine.js 当引擎。这条是为「机器上没有 Swift 编译器」
+  // 准备的（例如 Windows）—— 把旧版 engine.js 拷一份过去就能跑 A/B，
+  // 不必先装 Swift 工具链。
+  // ⚠️ 这个分支必须在 UciSpec **之前**拦下来：否则 'js:xxx' 会落进
+  // UciSpec 的 else 分支被当成 pika，报出的错完全指不到真正的原因。
+  if (spec.startsWith('js:')) return new JsEngine(spec.slice(3));
+  return new UciSpec(spec);
 }
 
 /* ---------- 开局集：取自项目自带的开局库，确定性 ---------- */
@@ -161,9 +182,22 @@ function buildOpenings(count, plies) {
   return list.length ? list : [[]];
 }
 
+/* 确定性伪随机（mulberry32）：同一 seed 必得同一串数，整轮结果可复现。
+   用自带的而不是 Math.random，是为了「跑完能重放同一批对局」。 */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 /* ---------- 走一局 ---------- */
 
-async function playGame(engines, cfg, gameIndex, opening) {
+async function playGame(engines, cfg, gameIndex, opening, pairSeed) {
   const aIsRed = gameIndex % 2 === 0;
   const mine = aIsRed ? engines.a : engines.b;      // 先手方
   const theirs = aIsRed ? engines.b : engines.a;
@@ -198,7 +232,26 @@ async function playGame(engines, cfg, gameIndex, opening) {
     if (!apply(u)) { openingError = '开局着法在裁判这里不合法：' + u; break; }
   }
 
-  const done = (o) => Object.assign({ ply: moves.length, labels, stats, opening }, o);
+  /* 开局多样性：光靠棋谱库远远不够 —— 库里只有 8 条棋路，去重后也就 8~16 盘不同的棋，
+     跑 1400 局等于把同一盘重放一百多遍，样本量是假的。这里在开局前缀之后再走 n 手
+     **随机合法着法**，把真正不同的起手局面拉开到几百上千个。
+
+     种子只取决于「对局对号」（floor(g/2)），所以一对里的两局（A 执红 / A 执黑）
+     面对的是**同一个局面**，比较依然成对；而整轮结果完全可复现。 */
+  if (!openingError && cfg.randomPlies > 0) {
+    const rnd = mulberry32(pairSeed);
+    for (let i = 0; i < cfg.randomPlies; i++) {
+      const legal = XQ.legalMoves(board, side);
+      if (!legal.length) break;
+      const mv = legal[Math.floor(rnd() * legal.length)];
+      if (!apply(idxToUci(mv[0]) + idxToUci(mv[1]))) break;
+    }
+  }
+
+  /* 引擎开始独立思考前的手数 —— 用它给「这一局从哪个局面开始」做指纹 */
+  const prefixLen = moves.length;
+  const done = (o) => Object.assign(
+    { ply: moves.length, labels, stats, opening, prefix: moves.slice(0, prefixLen) }, o);
   if (openingError) return done({ winner: null, reason: openingError, broken: true });
 
   while (moves.length < cfg.maxPly) {
@@ -366,8 +419,9 @@ function parseArgs() {
     msB: get('ms-b', null),
     depth: parseInt(get('depth', '0'), 10),
     games: parseInt(get('games', '8'), 10),
-    openings: parseInt(get('openings', '4'), 10),
-    openPlies: parseInt(get('open-plies', '6'), 10),
+    openings: parseInt(get('openings', '8'), 10),
+    openPlies: parseInt(get('open-plies', '8'), 10),
+    randomPlies: parseInt(get('random-plies', '0'), 10),
     maxPly: parseInt(get('max-ply', '200'), 10),
     seed: parseInt(get('seed', '1'), 10),
     perft: parseInt(get('perft', '0'), 10),
@@ -403,7 +457,13 @@ async function main() {
   console.log(`  A：${cfg.a}   每手 ${cfg.msA}ms`);
   console.log(`  B：${cfg.b}   每手 ${cfg.msB}ms`);
   console.log(`  共 ${games} 局｜开局 ${openings.length} 组（各取前 ${cfg.openPlies} 手）`
+    + (cfg.randomPlies > 0 ? ` + 之后各走 ${cfg.randomPlies} 手随机着法` : '')
     + `｜轮流执先｜手数上限 ${cfg.maxPly}`);
+  if (cfg.randomPlies === 0) {
+    console.log(`  ⚠️  --random-plies 为 0：两局一对共用同一开局，实际不同的棋只有`
+      + ` ${openings.length * 2} 盘，跑再多局也只是把它重放。`
+      + `\n      要量棋力请加 --random-plies 4~8。`);
+  }
   console.log();
 
   const engines = { a: makeEngine(cfg.a), b: makeEngine(cfg.b) };
@@ -415,6 +475,7 @@ async function main() {
 
   const perGame = [];
   const rows = [];
+  const starts = new Set();   /* 每局引擎开始独立思考时的局面指纹，用来查「重复同一盘」 */
   const tally = { a: 0, b: 0, draw: 0 };
   const reasons = {};
   const broken = [];
@@ -422,12 +483,14 @@ async function main() {
   const t0 = Date.now();
 
   for (let g = 0; g < games; g++) {
-    const opening = openings[(Math.floor(g / 2) + cfg.seed) % openings.length];
+    const pair = Math.floor(g / 2);
+    const opening = openings[(pair + cfg.seed) % openings.length];
     await engines.a.newGame();
     await engines.b.newGame();
     const started = Date.now();
-    const r = await playGame(engines, cfg, g, opening);
+    const r = await playGame(engines, cfg, g, opening, (cfg.seed + pair * 2654435761) >>> 0);
     elapsed += Date.now() - started;
+    starts.add(r.prefix.join(' '));
 
     const aIsRed = g % 2 === 0;
     const aColor = aIsRed ? '红' : '黑';
@@ -464,6 +527,25 @@ async function main() {
   console.log('='.repeat(72));
   console.log(`  A ${tally.a} 胜 / ${tally.draw} 和 / ${tally.b} 负　（共 ${n} 局）`);
   console.log(`  A 的得分率：${(scoreA * 100).toFixed(1)}%`);
+
+  /* 自证：报告「真正不同的起手局面有几组」。
+     对局台是确定性的，若开局不随机，名义局数会远大于独立样本数 ——
+     脚本一旦在这一点上沉默，读结果的人就会把重放当成大样本。
+
+     期望值是「对数」（= 局数/2）：一对里的两局**故意**共用同一局面、只交换执色，
+     这是成对比较的设计，不算重复。真正的问题是 distinct 比对数还少 ——
+     那说明不同对之间撞了同一局面，名义局数被注水。 */
+  const distinct = starts.size;
+  const pairs = Math.floor(n / 2);
+  console.log(`  独立起手局面：${distinct} 组 / ${n} 局（成对设计，期望 ${pairs} 组）`);
+  if (distinct < pairs) {
+    console.log(`  ⚠️  比期望少 ${pairs - distinct} 组：有不同对撞了同一局面，`
+      + '实际独立样本数少于局数的一半。');
+    if (cfg.randomPlies === 0) {
+      console.log('      根因很可能是 --random-plies 为 0 —— 此时只有'
+        + ` ${cfg.openings} 个开局 x 2 种执色，跑再多局都是重放。加 --random-plies 4~8 即可。`);
+    }
+  }
   if (ci) {
     const sign = (v) => (v > 0 ? '+' : '') + v.toFixed(0);
     console.log(`  Elo 差（A - B）：${sign(ci.elo)}　95% 置信区间 [${sign(ci.low)}, ${sign(ci.high)}]`);
