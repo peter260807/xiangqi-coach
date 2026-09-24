@@ -143,16 +143,23 @@ final class ArchiveTests: XCTestCase {
         let lib = XiangqiLibrary.loadFromBundle()
 
         // 开局失分惨重 → 应当推开局库。
-        // 注意要先把一步杀标成已通，否则「攻杀把握」0 分会成为最弱项，推荐就跑到杀法去了 ——
-        // 这个用例第一次跑正是这么失败的。
-        let tier1 = Set(lib.mates.filter { $0.tier == 1 }.map { "mate:\($0.id)" })
+        // 注意要**先把杀法全部标成已通**，否则「攻杀把握」（= 已通 / 题库总数）
+        // 会成为最弱项，推荐就跑到杀法去了 —— 这个用例第一次跑正是这么失败的。
+        //
+        // ⚠️ 原来这里只标了「tier 1 的那几道」。导入公开题库 445 道 + 用 Pikafish
+        //    又解出 525 道之后题库有 981 道，「通了 9 道」= 0.9%，
+        //    仍然是压倒性的最弱项，这条用例的前提就不成立了
+        //    （实测推荐变成 ["mate:m3", "mate:m9", "mate:x0028"]）。
+        //    攻杀把握的口径两端一致（网页端 `storage.js` 也是 solved / MATES.length），
+        //    所以这里要改的是用例，不是算法。
+        let allMates = Set(lib.mates.map { "mate:\($0.id)" })
         let weakOpening = Archive.drills(
             games: [record(ply: 40, result: "loss", finished: true, evals: [
                 eval(2, loss: 1000, phase: "opening"),
                 eval(4, loss: 1000, phase: "opening"),
                 eval(6, loss: 1000, phase: "opening")
             ])],
-            solvedIds: tier1, library: lib, limit: 3)
+            solvedIds: allMates, library: lib, limit: 3)
         XCTAssertTrue(weakOpening.contains { $0.sceneId.hasPrefix("opening:") },
                       "开局最弱却推荐了别的：\(weakOpening.map { $0.sceneId })")
 

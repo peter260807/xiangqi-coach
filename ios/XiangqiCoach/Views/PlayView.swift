@@ -27,8 +27,6 @@ struct PlayView: View {
     /// 全屏模式下，把「场景 / 难度 / 模式 / 棋谱」收进这个浮层
     @State private var showControls = false
 
-    private var scenes: [XQScene] { SceneCatalog.all(game.library) }
-
     /// 宽高都宽松（iPad 全屏、iPad 分屏的大部分）时走左右分栏：
     /// 棋盘占左边，操作与棋谱记录占右边 —— 不用来回滚动，棋盘也能吃满高度。
     private var isWide: Bool { hSize == .regular && vSize == .regular }
@@ -497,22 +495,38 @@ struct PlayView: View {
         }
     }
 
+    /// 每组杀法在切换菜单里最多列多少道（与训练页的 `matePageSize` 是同一套做法）
+    private let sceneMateCap = 40
+
+    /// 场景切换菜单。
+    ///
+    /// ⚠️ 杀法库有 981 道（导入公开题库 445 道 + 用 Pikafish 又解出 525 道）。
+    /// 原来这里是 `ForEach(scenes.filter { $0.kind == .mate })` —— 平铺的话
+    /// 菜单里会塞进近千个按钮：卡顿，而且根本翻不到要找的那道题。
+    /// 现在按来源分组、每组只列前 `sceneMateCap` 道；
+    /// 完整题库（带「已通/未通」排序）在「训练」页，那里才是翻题的地方。
     private var sceneMenu: some View {
         Menu {
             Button("标准开局（红先）") { game.requestScene(.standard()) }
-            Menu("杀法练习") {
-                ForEach(scenes.filter { $0.kind == .mate }) { s in
-                    Button(s.title) { game.requestScene(s) }
+            ForEach(game.library.mateGroups(), id: \.label) { g in
+                Menu(g.label.isEmpty ? "杀法练习" : "杀法 · \(g.label)") {
+                    ForEach(Array(g.items.prefix(sceneMateCap))) { m in
+                        Button(m.name) { game.requestScene(SceneCatalog.mateScene(m)) }
+                    }
+                    if g.items.count > sceneMateCap {
+                        Button("这一组还有 \(g.items.count - sceneMateCap) 道 —— 去「训练」页看") {}
+                            .disabled(true)
+                    }
                 }
             }
             Menu("开局库") {
-                ForEach(scenes.filter { $0.kind == .opening }) { s in
-                    Button(s.title) { game.requestScene(s) }
+                ForEach(game.library.openings) { o in
+                    Button(o.name) { game.requestScene(SceneCatalog.openingScene(o)) }
                 }
             }
             Menu("实用残局") {
-                ForEach(scenes.filter { $0.kind == .study }) { s in
-                    Button(s.title) { game.requestScene(s) }
+                ForEach(game.library.studies) { s in
+                    Button(s.name) { game.requestScene(SceneCatalog.studyScene(s)) }
                 }
             }
         } label: {

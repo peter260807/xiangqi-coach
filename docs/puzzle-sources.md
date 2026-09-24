@@ -165,7 +165,7 @@ wait
 
 node tools/import-puzzles.js emit --in /tmp/s0.jsonl,/tmp/s1.jsonl,/tmp/s2.jsonl,/tmp/s3.jsonl,/tmp/s4.jsonl,/tmp/s5.jsonl --dry
 node tools/import-puzzles.js emit --in ...        # 去掉 --dry 才真写回
-node tools/sync-library.js                        # 重新生成 web/js/library-data.js
+node tools/sync-library.js                        # 重新生成网页端与 iOS bundle 两份棋谱库
 node tools/check-library.js                       # 入册后再校验一遍
 node tools/test-import.js                         # 自证测试
 
@@ -270,20 +270,38 @@ node tools/sync-library.js && node tools/check-library.js && node tools/test-imp
 （12 步里只有 2 步将军）。**没查清谁对。**
 → 猜测方向：某一侧把 FEN 方言读成了另一盘棋。留档待查。
 
-### 5. ⚠️ 一个没做完的洞：iOS bundle 里的库是旧的
+### 5. ✅ 已修：iOS bundle 里的库是旧的（本轮补完）
 
-`ios/XiangqiCoach/Resources/library.json`（XcodeGen 把 `ios/XiangqiCoach` 整目录收作源）
-**停留在导入之前的状态 —— mates 只有 11 道**（9,612 字节）；
-而 `tools/sync-library.js` 只生成 `web/js/library-data.js`，**不碰 iOS 那一份**。
-→ **iOS 端从没见过那 445 道，更别说新的 525 道。**
+**当时的问题**：`ios/XiangqiCoach/Resources/library.json`（XcodeGen 把 `ios/XiangqiCoach`
+整目录收作源）**停留在导入之前的状态 —— mates 只有 11 道**（9,612 字节）；
+而 `tools/sync-library.js` 只生成 `web/js/library-data.js`，**不碰 iOS 那一份**
+→ iOS 端从没见过那 445 道，更别说新的 525 道。
 
-实测（把完整库塞进 bundle 再跑单测）：
-`LibraryTests.testEveryMatePuzzleIsPlayableAndActuallyWins` 立刻大面积失败，例如
-`第260局 金创满身：引擎在 6 层内没找到成杀（实际评估 183）`。
-
-原因：它断言「每道题自研引擎在 **6 层**内都能看到杀」，而这**只对 `mateIn ≤ 2` 成立**
-（库里 93 道 mateIn ≤ 3、329 道 ≤ 5、最深 30 手）。
+实测（把完整库塞进 bundle 再跑单测）：`LibraryTests.testEveryMatePuzzleIsPlayableAndActuallyWins`
+立刻大面积失败，例如 `第260局 金创满身：引擎在 6 层内没找到成杀（实际评估 183）`。
+原因：它断言「每道题自研引擎在 **6 层**内都能看到杀」，而这**只对 `mateIn ≤ 2` 成立**。
 → **这条断言一直只是靠「bundle 里恰好只有 11 道浅题」才绿的。**
 
-**要同步 iOS，得先把它改成项目自己在网页端已经用过的口径**：
-沿库里的解法路线走一遍判（纯规则层，不依赖引擎深度），引擎断言只对浅题抽样。
+**三处一起改的**：
+
+| 改动 | 内容 |
+|---|---|
+| 同步链 | `tools/sync-library.js` 现在**同时**生成 `web/js/library-data.js` 与 `ios/XiangqiCoach/Resources/library.json`（都是紧凑格式，各约 399 KB）。iOS 那份不再靠手工 cp。 |
+| 判据 | `testEveryMatePuzzleIsPlayableAndActuallyWins` 换成**沿库里的解法路线走一遍判**（纯规则层，与网页端 `XQLIB.validateLibrary` 同一口径）。引擎断言拆出去成 `testShallowMatePuzzlesAreFoundByEngine`，只对 `mateIn ≤ 2` 的 32 道。 |
+| 守门 | 新增 `testBundleIsNotTheStaleCopy`（条数 ≥ 900 + 抽查 `m1`/`x0010`/`x0446`/`x0970` + 最深 ≥ 20 手）—— 这个洞当初能藏住，正是因为所有单测都只断言「非空」，而那些浅题也非空。 |
+
+**顺带修的一处 UI 隐患**：对局页的场景切换菜单原来是
+`ForEach(scenes.filter { $0.kind == .mate })` 平铺 —— 981 道题就是近千个菜单项。
+现改成按来源分组、每组只列前 40 道（与训练页 `matePageSize` 同一套做法）。
+另外 `SceneCatalog` 拆出了 `mateScene` / `openingScene` / `studyScene` 三个单件构造函数：
+`SceneCatalog.all()` 会给 981 道题各建一个场景对象，不能再放在每手棋都要重算的 `body` 里。
+
+**「引擎 6 层看不到杀」的实测边界**（用编出来的 Swift 引擎逐题量，是上面判据取舍的依据）：
+
+| mateIn | 通过 / 总数 |
+|---|---|
+| ≤ 2 | **32 / 32** |
+| = 3 | 59 / 61 |
+| ≤ 4 | 91 / 206（4 手杀要 7 层才看得到，113 道**全部**失败） |
+
+→ depth 6 的搜索判据最多只覆盖到 `mateIn ≤ 2`，拿它当「全库体检」必然误报。

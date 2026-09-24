@@ -180,6 +180,40 @@ struct XQScene: Identifiable, Equatable {
 
 /// 把棋谱库摊平成可选场景列表
 enum SceneCatalog {
+    /* 三类场景各给一个**单独构造**的入口。
+     *
+     * 为什么不能只留 `all(_:)`：对局页每落一手就要重算一次 body，
+     * 而杀法库现在有 981 道 —— 每次重算都重建近千个场景对象太浪费。
+     * 有了这三个入口，菜单只需要按需构造被点中的那一个。*/
+    static func mateScene(_ m: MatePuzzle) -> XQScene {
+        /* 导入的题没有 idea（讲解是手写那 11 道才有的），
+           用来源名兜底，别在提示里露出 "nil" 或空行。 */
+        let lead = m.idea ?? (m.set.map { "选自《\($0)》。" } ?? "")
+        let hint = "轮到你走，找出成杀的那一步。"
+            + "想不出来可以点「提示」，或用「看解法」逐步演示。"
+            + "\n\n（排局类题目的红方常常子力大落后，下方评估条因此可能显示对面占优 —— "
+            + "它只反映子力，别以它为准。）"
+        return XQScene(id: "mate:\(m.id)", kind: .mate, title: m.name,
+                       startFEN: m.fen,
+                       note: lead.isEmpty ? hint : lead + "\n\n" + hint,
+                       preloadLabels: [],
+                       demoLine: m.line ?? [])
+    }
+
+    static func openingScene(_ o: OpeningLine) -> XQScene {
+        let tokens = o.line.split(separator: " ").map(String.init)
+        return XQScene(id: "opening:\(o.id)", kind: .opening, title: o.name,
+                       startFEN: Rules.startFEN,
+                       note: o.desc + "\n\n已按谱摆好前几手，可以用「看解法」整段演示。",
+                       preloadLabels: tokens,
+                       demoLine: tokens)
+    }
+
+    static func studyScene(_ s: StudyPuzzle) -> XQScene {
+        XQScene(id: "study:\(s.id)", kind: .study, title: s.name,
+                startFEN: s.fen, note: s.desc, preloadLabels: [])
+    }
+
     static func all(_ lib: XiangqiLibrary) -> [XQScene] {
         var out: [XQScene] = [.standard()]
 
@@ -193,32 +227,9 @@ enum SceneCatalog {
                              demoLine: c.line.split(separator: " ").map(String.init),
                              demoNotes: notes))
         }
-        for m in lib.mates {
-            /* 导入的题没有 idea（讲解是手写那 11 道才有的），
-               用来源名兜底，别在提示里露出 "nil" 或空行。 */
-            let lead = m.idea ?? (m.set.map { "选自《\($0)》。" } ?? "")
-            let hint = "轮到你走，找出成杀的那一步。"
-                + "想不出来可以点「提示」，或用「看解法」逐步演示。"
-                + "\n\n（排局类题目的红方常常子力大落后，下方评估条因此可能显示对面占优 —— "
-                + "它只反映子力，别以它为准。）"
-            out.append(XQScene(id: "mate:\(m.id)", kind: .mate, title: m.name,
-                             startFEN: m.fen,
-                             note: lead.isEmpty ? hint : lead + "\n\n" + hint,
-                             preloadLabels: [],
-                             demoLine: m.line ?? []))
-        }
-        for o in lib.openings {
-            let tokens = o.line.split(separator: " ").map(String.init)
-            out.append(XQScene(id: "opening:\(o.id)", kind: .opening, title: o.name,
-                             startFEN: Rules.startFEN,
-                             note: o.desc + "\n\n已按谱摆好前几手，可以用「看解法」整段演示。",
-                             preloadLabels: tokens,
-                             demoLine: tokens))
-        }
-        for s in lib.studies {
-            out.append(XQScene(id: "study:\(s.id)", kind: .study, title: s.name,
-                             startFEN: s.fen, note: s.desc, preloadLabels: []))
-        }
+        out.append(contentsOf: lib.mates.map(mateScene))
+        out.append(contentsOf: lib.openings.map(openingScene))
+        out.append(contentsOf: lib.studies.map(studyScene))
         return out
     }
 

@@ -268,7 +268,7 @@ node tools/test-rep-search.js # 搜索层的「和棋意识」（35 项断言）
 node tools/test-review.js     # 复盘摘要：字段、排序、文案、提示词接线（55 项，含篡改自证）
 node tools/test-import.js     # 题库导入：FEN 转换、去重键、杀棋手数（21 项，含反向自证）
 node tools/test-ai.js         # 大模型联通性（会真实调用接口）
-node tools/sync-library.js    # 改完棋谱库后同步到网页端
+node tools/sync-library.js    # 改完棋谱库后同步到两端（网页 + iOS bundle）
 node tools/gen-lines.js       # 用引擎重算各杀局的解法路线
 node tools/add-classics.js    # 录入并校验古谱名局
 node tools/check-library.js   # 局面合法性（子力上限、士象位置、兵卒方向、飞将、被将军）
@@ -318,7 +318,7 @@ node tools/match.js --perft 3                        # 顺带验规则：本项�
 > **默认不清表**（那是引擎本来的行为，也是历史批次的口径）；要可复现就加 `--clear-tt`，
 > 代价是中局每手慢好几倍（开局段只慢 1.4 倍，所以别拿开局估这个代价）。
 
-iOS 端另有一套 XCTest 单元测试（82 个用例）：
+iOS 端另有一套 XCTest 单元测试（104 个用例）：
 
 ```bash
 cd ios
@@ -332,7 +332,7 @@ xcodebuild test -project XiangqiCoach.xcodeproj -scheme XiangqiCoach \
 | `RulesTests` | 走子规则逐项定点用例（含不该出现的着法）、开局 44 着基准、白脸将、困毙、走子/撤销还原 |
 | `CheckCrossValidationTests` | **快速版将军判定 vs 参考实现**，随机对局里逐局面比对两版结论 |
 | `NotationTests` | 中文记谱的红黑方向与前后区分，以及「记谱 → 反查」往返验证 |
-| `LibraryTests` | 棋谱库每条都过引擎：可走、非退化、确实成杀；名局逐手合法并以将死收尾 |
+| `LibraryTests` | 棋谱库每条都**沿存下的解法路线走一遍**（纯规则层）：可走、非退化、确实将死、步数与标注手数一致；另有「bundle 不是旧副本」的守门断言；浅题（mateIn ≤ 2）另过一遍引擎，确认「提示」按钮能找到杀 |
 | `SearchTests` | 搜索给出的着法必须合法、评估满足红黑镜像反对称、胜率映射 |
 | `RepetitionSearchTests` | **搜索层的和棋意识**：走回旧局面恰好 0 分、第 2 层才发生的重复也要认、优势方躲开循环、劣势方主动求和、120 手历史不许拖慢搜索 |
 | `ArchiveTests` | 能力画像与训练推荐的算法，用构造数据把每一档钉住 |
@@ -408,12 +408,15 @@ xcodebuild test -project XiangqiCoach.xcodeproj -scheme XiangqiCoach \
 │       ├── Models/           棋谱库 / 存档 / 对局状态
 │       ├── Views/            棋盘 / 对弈 / 训练 / 战绩 / 设置
 │       └── Resources/
+│           └── library.json  由 tools/sync-library.js 生成，勿手改
 ├── tools/                    测试、同步与数据脚本
 │   ├── test-engine.js        规则与棋谱库校验
 │   ├── test-draw.js          判和 / 长将判负的规则（长将、三次重复、60 回合）
 │   ├── test-rep-search.js    搜索层的和棋意识（重复局面按 0 分）
 │   ├── test-ai.js            大模型联通性
-│   ├── sync-library.js       shared/library.json → web/js/library-data.js
+│   ├── sync-library.js       shared/library.json → web/js/library-data.js + ios/…/Resources/library.json
+│   │                         （两端都由它产出 —— iOS 那份曾经是手工 cp 的「独立副本」，
+│   │                           结果停在导入之前的 11 道题上，见 docs/puzzle-sources.md §六.5）
 │   ├── gen-lines.js          用引擎离线算各杀局的解法路线
 │   ├── add-classics.js       录入并校验古谱名局
 │   ├── lib/uci-engine.js     UCI 子进程封装（对局台与 pk-match 共用）

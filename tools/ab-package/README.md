@@ -122,8 +122,13 @@ web/js/engine.js          A 版引擎（剪枝默认**开**，可用环境变量
                             XQ_LMR=1 / XQ_NULL=1         显式打开（默认就是开）
                             XQ_NO_PERPETUAL=1            关掉长将判负（归因用）
                           run-ab.bat 的两个模式就是靠这组变量切的，不用改代码
-web/js/library.js         开局库
-web/js/library-data.js    开局库数据（8 组棋路）
+web/js/library.js         棋谱库访问层
+web/js/library-data.js    棋谱库数据。⚠️ 这里是**简版**（8 组开局，10 KB）——
+                          对局台只读 `XQLIB.OPENINGS` 拿开局棋路，用不到那 981 道杀法题，
+                          塞进来只会让包白胖 390 KB。**所以这一份不必跟着
+                          `node tools/sync-library.js` 走**，它与主线不同步是**有意的**。
+                          （主线那边两端必须同步的理由见 docs/puzzle-sources.md §六.5：
+                           iOS 的 bundle 副本曾经停在 11 道题上，而单测全绿。）
 baseline/engine.js        B 版引擎
 results/                  历次 A/B 留档（含那次把剪枝判错的、以及修正后的两批）：
                             2026-09-23-ab-perpetual-40games.txt        长将修复  58.8% / +61 [−32,+155]
