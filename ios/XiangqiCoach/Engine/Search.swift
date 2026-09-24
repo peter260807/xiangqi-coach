@@ -8,16 +8,31 @@ struct SearchLevel {
     let timeMs: Int
     let slack: Int32   // 入门档会挑分数接近的着法，故意留破绽
 
+    /// 档位只有四档。
+    ///
+    /// 曾经有第五档 `master`（大师，d12/6000ms）。2026-09-24 实测它与 `expert`
+    /// 的区别是 **−112 Elo、95% 区间 [−262, +37] 跨 0**，开局段两者都卡在第 8 层
+    /// —— 多给的 2.5 秒换不成棋力（docs/strength-levels.md §一、§二）。故删除。
+    ///
+    /// ⚠️ 本表改动必须同步 `web/js/engine.js` 的 `LEVELS` 与
+    /// `tools/level-match/gen-level-engines.js`（后者会反过来对账，防止走神）。
     static let all: [SearchLevel] = [
         SearchLevel(key: "easy",   label: "入门", depth: 1,  timeMs: 600,  slack: 320),
         SearchLevel(key: "normal", label: "初级", depth: 3,  timeMs: 1200, slack: 110),
         SearchLevel(key: "hard",   label: "中级", depth: 5,  timeMs: 2200, slack: 35),
-        SearchLevel(key: "expert", label: "高级", depth: 8,  timeMs: 3500, slack: 0),
-        SearchLevel(key: "master", label: "大师", depth: 12, timeMs: 6000, slack: 0)
+        SearchLevel(key: "expert", label: "高级", depth: 8,  timeMs: 3500, slack: 0)
     ]
 
+    /// 已废弃的档位名 → 现在归到哪一档。
+    ///
+    /// 老存档的 `GameRecord.level` 里可能还写着 `"master"`。不做这层映射的话，
+    /// 它会掉进下面的兜底（`hard`）→ 用户回看一盘「大师」难度的棋，难度显示成
+    /// 「中级」，静默降了两档。映射到 `expert` 才与实测结论一致。
+    static let legacyAliases: [String: String] = ["master": "expert"]
+
     static func named(_ key: String) -> SearchLevel {
-        all.first { $0.key == key } ?? all[2]
+        let resolved = legacyAliases[key] ?? key
+        return all.first { $0.key == resolved } ?? all.first { $0.key == "hard" } ?? all[0]
     }
 }
 

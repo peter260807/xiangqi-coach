@@ -19,7 +19,7 @@ const ROOT = path.resolve(__dirname, '../..');
 const BUILD = path.join(__dirname, 'build');
 const XQ = require(path.join(ROOT, 'web/js/engine.js'));
 
-const levels = ['easy', 'normal', 'hard', 'expert', 'master'];
+const levels = ['easy', 'normal', 'hard', 'expert'];
 const engines = {};
 for (const lv of levels) {
   const p = path.join(BUILD, `lv-${lv}.js`);
@@ -92,10 +92,10 @@ for (const lv of levels) {
 /* 反向断言：最弱档必须**明显**低于最强档。否则「把上限烘进去」这件事
    根本没被验证到（可能所有档其实跑的都是同一份）。 */
 const probeLabel = cases[1][0];
-const e0 = probe(engines.easy, probeLabel).depth, e4 = probe(engines.master, probeLabel).depth;
-if (!(e4 > e0)) { console.log(`❌ 入门 ${e0} 层、大师 ${e4} 层 —— 档位之间没有拉开`); bad++; }
+const e0 = probe(engines.easy, probeLabel).depth, eN = probe(engines.expert, probeLabel).depth;
+if (!(eN > e0)) { console.log(`❌ 入门 ${e0} 层、高级 ${eN} 层 —— 档位之间没有拉开`); bad++; }
 
 console.log(bad === 0
-  ? `\n✅ 自证通过：5 档在 3 个局面下都没越过各自上限；同一局面 入门 ${e0} 层 vs 大师 ${e4} 层`
+  ? `\n✅ 自证通过：${levels.length} 档在 ${cases.length} 个局面下都没越过各自上限；同一局面 入门 ${e0} 层 vs 高级 ${eN} 层`
   : `\n❌ 自证失败：${bad} 处异常`);
 process.exit(bad === 0 ? 0 : 1);

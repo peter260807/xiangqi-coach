@@ -143,4 +143,42 @@ final class SearchTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(deep.depth, shallow.depth)
         XCTAssertGreaterThan(deep.nodes, 0)
     }
+
+    // MARK: - 难度档位表
+
+    /// 档位表本身要有人守着。
+    ///
+    /// 起因：2026-09-24 删掉第五档 `master`（实测它与 `expert` 差 −112 Elo、
+    /// 区间跨 0，见 docs/strength-levels.md §二）时，**104 项单测全绿** ——
+    /// 因为一条都没碰过这张表。删档会同时影响：难度菜单项数、存档里
+    /// `GameRecord.level` 的解读、以及「四档必须逐级变强」这个产品承诺。
+    /// 三条都不是编译器能发现的。
+    func testLevelTableIsFourTiersAndLegacyNameStillResolves() {
+        XCTAssertEqual(SearchLevel.all.count, 4,
+                       "档位数变了 —— 难度菜单和 tools/level-match/ 都要跟着改")
+        XCTAssertEqual(SearchLevel.all.map { $0.key }, ["easy", "normal", "hard", "expert"])
+
+        // 老存档里存的是 "master"。掉进兜底（hard）会让用户回看一盘「大师」棋时
+        // 看到「中级」，静默降两档；映射到 expert 才与实测结论一致。
+        XCTAssertEqual(SearchLevel.named("master").key, "expert",
+                       "废弃档位名必须仍然解析得到，且落在实测等价的 expert 上")
+        XCTAssertEqual(SearchLevel.named("master").label, "高级")
+
+        // 未知键仍然兜底到「中级」（沿用删档前的行为）
+        XCTAssertEqual(SearchLevel.named("bogus-key").key, "hard")
+    }
+
+    /// 「四档」如果深度不是严格递增，档位菜单就成了摆设。
+    /// 顺带钉住上限：`expert` 是 8 层 —— 原来那档 12 层在开局段根本到不了，
+    /// 是个兑现不了的承诺（docs/strength-levels.md §一）。
+    func testLevelDepthsAreStrictlyIncreasingAndCappedAtExpert() {
+        let depths = SearchLevel.all.map { $0.depth }
+        XCTAssertEqual(depths, [1, 3, 5, 8])
+        for i in 1..<depths.count {
+            XCTAssertGreaterThan(depths[i], depths[i - 1],
+                                 "第 \(i) 档没有比上一档更深")
+        }
+        XCTAssertEqual(SearchLevel.all.last?.key, "expert",
+                       "最强档必须是 expert —— master 已按实测结论删除")
+    }
 }

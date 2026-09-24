@@ -34,7 +34,7 @@ if [ $? -ne 0 ]; then
 fi
 echo "档位引擎自证通过 → $OUT/probe-levels.txt"
 
-for pair in easy:normal normal:hard hard:expert expert:master; do
+for pair in easy:normal normal:hard hard:expert; do
   A="${pair%%:*}"
   B="${pair##*:}"
   LOG="$OUT/lvl-${A}-vs-${B}.jsonl"

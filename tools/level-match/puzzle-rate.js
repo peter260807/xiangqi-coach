@@ -41,8 +41,7 @@ const MS_CAP = argNum('--ms-cap', 2000);
 const MIN_N = argNum('--min-n', 15);
 
 const LEVELS = [['easy', XQ.LEVELS.easy], ['normal', XQ.LEVELS.normal],
-                ['hard', XQ.LEVELS.hard], ['expert', XQ.LEVELS.expert],
-                ['master', XQ.LEVELS.master]];
+                ['hard', XQ.LEVELS.hard], ['expert', XQ.LEVELS.expert]];
 
 /* 分层抽样：按 mateIn 各取若干道，固定取样（可复现） */
 let puzzles = lib.mates;

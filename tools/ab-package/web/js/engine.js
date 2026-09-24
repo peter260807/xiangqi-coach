@@ -1121,16 +1121,29 @@
 
   /* ---------- 难度分级 ---------- */
 
+  /* ── 档位只有四档 ──────────────────────────────────────────────────
+   * 曾经有第五档 `master`（大师，d12/6000ms）。2026-09-24 实测它与 `expert`
+   * 的区别是 **−112 Elo、95% 区间 [−262, +37] 跨 0**，开局段两者都卡在第 8 层
+   * —— 多给的 2.5 秒换不成棋力（docs/strength-levels.md §一、§二）。故删除。
+   * LEGACY_LEVELS 让老存档 / 老书签里的 "master" 仍落在 expert 上，
+   * 而不是被下面的兜底静默降成「初级」。
+   * ⚠️ 本表改动必须同步 ios/XiangqiCoach/Engine/Search.swift 的 SearchLevel.all
+   *   与 tools/level-match/gen-level-engines.js（后者会反过来对账，防止走神）。 */
   var LEVELS = {
     easy:   { depth: 1,  time: 600,  slack: 320, label: '\u5165\u95e8' },
     normal: { depth: 3,  time: 1200, slack: 110, label: '\u521d\u7ea7' },
     hard:   { depth: 5,  time: 2200, slack: 35,  label: '\u4e2d\u7ea7' },
-    expert: { depth: 8,  time: 3500, slack: 0,   label: '\u9ad8\u7ea7' },
-    master: { depth: 12, time: 6000, slack: 0,   label: '\u5927\u5e08' }
+    expert: { depth: 8,  time: 3500, slack: 0,   label: '\u9ad8\u7ea7' }
   };
+  var LEGACY_LEVELS = { master: 'expert' };
+
+  /* 档位键 → 配置。认得废弃的档位名，最后才兜底到「初级」。 */
+  function levelConfig(level) {
+    return LEVELS[level] || LEVELS[LEGACY_LEVELS[level]] || LEVELS.normal;
+  }
 
   function pickMove(board, side, level, history) {
-    var cfg = LEVELS[level] || LEVELS.normal;
+    var cfg = levelConfig(level);
     var res = rootSearch(board, side, cfg.depth, cfg.time, null, history);
     if (res.move && cfg.slack > 0) {
       var b = cloneBoard(board);
@@ -1335,7 +1348,7 @@
   /* ---------- 导出 ---------- */
 
   var api = {
-    EMPTY: EMPTY, START: START, MATE: MATE, LEVELS: LEVELS,
+    EMPTY: EMPTY, START: START, MATE: MATE, LEVELS: LEVELS, LEGACY_LEVELS: LEGACY_LEVELS, levelConfig: levelConfig,
     isRed: isRed, sideOf: sideOf, other: other, rowOf: rowOf, colOf: colOf, nameOf: nameOf,
     parseBoard: parseBoard, boardToString: boardToString, cloneBoard: cloneBoard,
     genMoves: genMoves, genCaptures: genCaptures,

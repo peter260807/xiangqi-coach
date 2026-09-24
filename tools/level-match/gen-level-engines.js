@@ -25,23 +25,34 @@ const outDir = path.join(__dirname, 'build');
 /* 与 web/js/engine.js 的 LEVELS、ios/XiangqiCoach/Engine/Search.swift 的
  * SearchLevel.all **逐项一致**。三处任一处改了这里就得跟着改，
  * 否则量出来的「档位棋力」和用户实际下的不是同一盘棋。
- * probe-level-engines.js 会拿 engine.js 的 LEVELS 回来对一遍，防止走神。 */
+ * 下面有**双向**对账：本表少写了档位会被抓（缺档），多写了也会被抓（源里没有）。 */
 const levels = [
   ['easy',   1,  600],
   ['normal', 3, 1200],
   ['hard',   5, 2200],
   ['expert', 8, 3500],
-  ['master', 12, 6000],
 ];
 
-/* 源头对账：engine.js 里的 LEVELS 必须和上面这张表一致 */
+/* 源头对账：engine.js 的 LEVELS 与本表必须**双向**一致。
+ *
+ * 只做正向（表里的档源里得有）是不够的：2026-09-24 删掉 `master` 档时，
+ * 若只在 engine.js 删、忘了删本表，正向检查照样通过（其余四档都在），
+ * 于是 wrapper 会去 require 一个不存在的档 —— 而这文件恰恰是「量档位棋力」
+ * 的唯一入口，坏了也不会有人立刻发现。所以补上反向那半。 */
 const XQ = require(path.join(ROOT, 'web/js/engine.js'));
+const declared = new Set(levels.map(([n]) => n));
 let mismatched = 0;
 for (const [name, depth, time] of levels) {
   const cfg = XQ.LEVELS[name];
   if (!cfg) { console.error(`源里没有 ${name} 档`); mismatched++; continue; }
   if (cfg.depth !== depth || cfg.time !== time) {
     console.error(`${name}：源里是 depth=${cfg.depth} time=${cfg.time}，本表写的是 depth=${depth} time=${time}`);
+    mismatched++;
+  }
+}
+for (const name of Object.keys(XQ.LEVELS)) {
+  if (!declared.has(name)) {
+    console.error(`源里有 ${name} 档，本表却没有 —— 新增档位忘了同步到这里`);
     mismatched++;
   }
 }
