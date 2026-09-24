@@ -310,30 +310,46 @@
     ];
   }
 
+  /* 赛后复盘。
+   *
+   * 改过一版，值得说明为什么：原来这里只把「第 N 手 <分数>」这一串数字
+   * 连成一长条给模型，而每手的 grade / loss / bestLabel / phase / missedMate
+   * 明明都算出来了却没传 —— 模型拿到一串没有语义的分数，只能靠猜去指认
+   * 「哪一步是转折点」，指错的时候人还看不出来（因为输出很像回事）。
+   *
+   * 现在的事实来自 XQSTORE.digestLines()：哪一手、丢了多少分、评价是什么、
+   * 引擎建议走哪里，都是确定的。模型只负责③：把「为什么」讲清楚、给练习建议。
+   * 并且明确禁止它另造着法 —— 复盘里出现的着法必须能对回引擎给的那一条。 */
   function reviewMessages(ctx) {
     var lines = [];
-    lines.push('\u3010\u5bf9\u5c40\u8bb0\u5f55\u3011');
-    lines.push(ctx.moveText || '\uff08\u65e0\uff09');
+    lines.push('【对局记录】');
+    lines.push(ctx.moveText || '（无）');
     lines.push('');
-    lines.push('\u3010\u7ed3\u679c\u3011' + (ctx.result || '\u672a\u7ed3\u675f'));
-    if (ctx.evalTrace && ctx.evalTrace.length) {
+    lines.push('【结果】' + (ctx.result || '未结束'));
+    if (ctx.digestLines && ctx.digestLines.length) {
       lines.push('');
-      lines.push('\u3010\u5f15\u64ce\u8bc4\u4f30\u53d8\u5316\u3011\uff08\u6bcf\u56de\u5408\u7ea2\u65b9\u89c6\u89d2\uff09');
-      lines.push(ctx.evalTrace.join('\uff0c'));
-    }
-    if (ctx.startFen && ctx.endFen) {
+      lines.push(ctx.digestLines.join('\n'));
+    } else if (ctx.evalTrace && ctx.evalTrace.length) {
+      /* 没有结构化摘要时的退路（例如旧存档没有逐手分析） */
       lines.push('');
-      lines.push('\u3010\u7ec8\u5c40\u9762\u3011');
-      lines.push(boardAscii(ctx.endBoard));
+      lines.push('【引擎评估变化】（每手红方视角，单位厘兵）');
+      lines.push(ctx.evalTrace.join('，'));
     }
     lines.push('');
-    lines.push('\u3010\u4efb\u52a1\u3011\u505a\u4e00\u4efd\u590d\u76d8\u62a5\u544a\uff0c\u7528\u5c0f\u6807\u9898\u5206\u6210\u4e09\u6bb5\uff1a');
-    lines.push('1. \u5f00\u5c40\uff1a\u5e03\u5c40\u662f\u5426\u5408\u7406\uff0c\u6709\u6ca1\u6709\u660e\u663e\u5931\u5148\u624b\uff1b');
-    lines.push('2. \u4e2d\u5c40\uff1a\u627e\u51fa 1\uff5e2 \u4e2a\u5173\u952e\u8f6c\u6298\u70b9\uff0c\u6307\u51fa\u5177\u4f53\u54ea\u4e00\u7740\u8d70\u9519\u4e86\u3001\u5e94\u8be5\u8d70\u4ec0\u4e48\uff1b');
-    lines.push('3. \u603b\u7ed3\uff1a\u7ed9 2\uff5e3 \u6761\u53ef\u4ee5\u9a6c\u4e0a\u7ec3\u4e60\u7684\u6539\u8fdb\u5efa\u8bae\u3002');
-    lines.push('\u5168\u6587\u4e0d\u8981\u8d85\u8fc7 500 \u5b57\u3002');
+    lines.push('【终局面】');
+    lines.push(boardAscii(ctx.endBoard));
+    lines.push('');
+    lines.push('【任务】写一份复盘报告，用小标题分成三段：');
+    lines.push('1. 开局：布局是否合理，有没有明显失先手；');
+    lines.push('2. 中局：从上面「关键时刻」里挑最重要的 1～2 处，说明这一步错在哪、'
+      + '为什么引擎建议的那一步更好；');
+    lines.push('3. 总结：给 2～3 条可以马上练习的改进建议，并指出对应上面哪个阶段。');
+    lines.push('【硬性要求】');
+    lines.push('· 只允许引用上面已经列出的着法与分数，不要自己另算或另造着法；');
+    lines.push('· 如果某个阶段的数据不足（手数很少），就直说「样本太少，先不下结论」；');
+    lines.push('· 全文不要超过 500 字。');
     return [
-      { role: 'system', content: SYSTEM_COACH + '\u4f60\u6b63\u5728\u505a\u8d5b\u540e\u590d\u76d8\u3002' },
+      { role: 'system', content: SYSTEM_COACH + '你正在做赛后复盘。' },
       { role: 'user', content: lines.join('\n') }
     ];
   }

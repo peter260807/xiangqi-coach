@@ -11,6 +11,11 @@ struct MoveEval: Codable {
     var phase: String      // opening / mid / end
     /// 这一手原本有杀棋却没能走出来。用可选类型是为了让加字段之前的旧存档仍能解码。
     var missedMate: Bool?
+    /// 实际走的那一手的中文记谱。**在分析时就存下来**，不要在复盘时靠重放反推 ——
+    /// 重放依赖「着法序列是完整的」，而实战里 `moves` 曾经只装了红方着法，
+    /// 重放出来是另一盘棋，`played` 会指到不相干的着法而输出看起来毫无破绽。
+    /// 旧存档没有这个字段 → 显示「（记谱缺失）」，不猜。
+    var playedLabel: String?
 }
 
 struct GameFlags: Codable {
@@ -50,6 +55,211 @@ struct GameRecord: Codable, Identifiable {
         if result == "win" { return "胜" }
         if result == "loss" { return "负" }
         return finished ? "和" : "未完"
+    }
+}
+
+// MARK: - 复盘摘要
+
+/// 把**已经算好的**逐手分析（loss / grade / bestLabel / phase / missedMate）
+/// 整理成一份结构化复盘。
+///
+/// 起因：复盘原来只把「第N手 <分数>」这一串数字喂给大模型，
+/// 而每手其实都算出了 grade/loss/bestLabel —— 全被丢掉了。
+/// 那串数字没有语义，模型只能猜哪一步是转折点，猜不准；人也读不出信息。
+///
+/// 这份摘要做两件事：
+///   ① 让「不配 API Key 也能复盘」成立（`text` 完全由数据生成，秒出、确定）
+///   ② 让大模型拿到的事实是**确定的**，它只负责讲「为什么」和「练什么」
+///
+/// ⚠️ 这里只做「读数」，不做棋理推断。任何关于「该怎么走」的结论
+///    都必须来自引擎给的 `bestLabel`，不能由本类型编。
+///    （与 web 端 `XQSTORE.reviewDigest` 是同一套定义，两边字段名保持一致。）
+struct ReviewDigest {
+
+    struct PhaseStat {
+        var key: String
+        var name: String
+        var moves: Int
+        var avgLoss: Int?
+        var blunder: Int
+        var mistake: Int
+        var inaccuracy: Int
+    }
+
+    struct KeyMoment {
+        var ply: Int
+        var round: Int
+        var phase: String
+        var played: String
+        var loss: Int32
+        var grade: String
+        var gradeName: String
+        var best: String
+        var missedMate: Bool
+    }
+
+    var rounds = 0
+    var result = "unfinished"
+    var counts = (moves: 0, blunder: 0, mistake: 0, inaccuracy: 0, missedMate: 0)
+    var phases: [PhaseStat] = []
+    var keys: [KeyMoment] = []
+    /// 平均丢分最高、且样本 ≥3 手的阶段（样本不足时为 nil —— 一手棋定不了「你中局弱」）
+    var worst: PhaseStat?
+    /// 各阶段平均丢分的等权平均。**不把所有手混在一起平均** ——
+    /// 否则残局手少的时候会被开局的手数稀释掉。
+    var avgLoss = 0
+
+    static let phaseNames = ["opening": "开局", "mid": "中局", "end": "残局"]
+    static let gradeNames = ["blunder": "严重失误", "mistake": "失误",
+                             "inaccuracy": "不够精确", "ok": "正常"]
+
+    private static func avgInt(_ xs: [Int32]) -> Int {
+        guard !xs.isEmpty else { return 0 }
+        return Int((Double(xs.reduce(0) { $0 + $1 }) / Double(xs.count)).rounded())
+    }
+
+    /// 从对局记录生成摘要。没有逐手分析时返回 nil（打谱演示、旧存档）。
+    static func build(_ record: GameRecord) -> ReviewDigest? {
+        guard !record.evals.isEmpty else { return nil }
+        var d = ReviewDigest()
+        d.result = record.result
+
+        let evals = record.evals
+        /* 每手走的什么，直接取分析时存下来的 `playedLabel`。
+           原来这里是「从 startFEN 重放 record.moves、边走边取 Notation.label」——
+           看着更干净，但它依赖 `moves` 是完整着法序列；实测不是（详见 MoveEval 的注释）。
+           别再把「反推」当成数据来源 —— 能存就存。 */
+        let maxPly = evals.map { $0.ply }.max() ?? 0
+        /* 回合数取两个来源的较大者：完整序列更准；旧存档里它只有红方着法，
+           那时用「最大分析手数」兜底，最多少算半回合。 */
+        d.rounds = max((record.moves.count + 1) / 2, (maxPly + 1) / 2)
+
+        d.counts = (
+            moves: evals.count,
+            blunder: evals.filter { $0.grade == "blunder" }.count,
+            mistake: evals.filter { $0.grade == "mistake" }.count,
+            inaccuracy: evals.filter { $0.grade == "inaccuracy" }.count,
+            missedMate: evals.filter { $0.missedMate == true }.count
+        )
+
+        d.phases = ["opening", "mid", "end"].map { key in
+            let list = evals.filter { $0.phase == key }
+            return PhaseStat(
+                key: key, name: phaseNames[key] ?? key, moves: list.count,
+                avgLoss: list.isEmpty ? nil : avgInt(list.map { $0.loss }),
+                blunder: list.filter { $0.grade == "blunder" }.count,
+                mistake: list.filter { $0.grade == "mistake" }.count,
+                inaccuracy: list.filter { $0.grade == "inaccuracy" }.count
+            )
+        }
+
+        /* 关键时刻：只看真正扣分的（严重失误 / 失误 / 漏杀），按丢分降序取前 6。
+           「不够精确」不进来 —— 阈值只有 100 分，列出来会把真正的问题埋掉。 */
+        d.keys = evals
+            .filter { $0.grade == "blunder" || $0.grade == "mistake" || $0.missedMate == true }
+            .sorted { $0.loss > $1.loss }
+            .prefix(6)
+            .map { e in
+                KeyMoment(
+                    ply: e.ply,
+                    round: (e.ply + 1) / 2,
+                    phase: phaseNames[e.phase] ?? "中局",
+                    played: (e.playedLabel?.isEmpty == false) ? e.playedLabel! : "（记谱缺失）",
+                    loss: e.loss,
+                    grade: e.grade,
+                    gradeName: gradeNames[e.grade] ?? e.grade,
+                    best: e.bestLabel,
+                    missedMate: e.missedMate == true
+                )
+            }
+
+        let ranked = d.phases.filter { $0.moves >= 3 && $0.avgLoss != nil }
+            .sorted { ($0.avgLoss ?? 0) > ($1.avgLoss ?? 0) }
+        d.worst = ranked.first
+        let vals = d.phases.compactMap { $0.avgLoss }
+        d.avgLoss = vals.isEmpty ? 0 : Int((Double(vals.reduce(0, +)) / Double(vals.count)).rounded())
+        return d
+    }
+
+    /// 本地复盘文案 —— 不依赖大模型，也不需要网络。
+    var text: String {
+        var L: [String] = []
+        let res: String
+        switch result {
+        case "win": res = "你（红方）获胜"
+        case "loss": res = "你（红方）落败"
+        case "draw": res = "和棋"
+        default: res = "对局进行中"
+        }
+        L.append("【结果】\(res)　共 \(rounds) 回合")
+
+        L.append("")
+        L.append("【失误分布】")
+        for p in phases where p.moves > 0 {
+            var bits: [String] = []
+            if p.blunder > 0 { bits.append("严重失误 \(p.blunder)") }
+            if p.mistake > 0 { bits.append("失误 \(p.mistake)") }
+            if p.inaccuracy > 0 { bits.append("不够精确 \(p.inaccuracy)") }
+            L.append("  \(p.name)（\(p.moves) 手，平均丢分 \(p.avgLoss ?? 0)）"
+                     + (bits.isEmpty ? "：没有明显问题" : "：" + bits.joined(separator: " · ")))
+        }
+
+        if keys.isEmpty {
+            L.append("")
+            L.append("【关键时刻】没有严重失误、失误或漏杀。")
+        } else {
+            L.append("")
+            L.append("【关键时刻】按丢分排序")
+            for k in keys {
+                L.append("  第 \(k.ply) 手（第 \(k.round) 回合，\(k.phase)）\(k.played) —— "
+                         + (k.missedMate ? "漏杀" : "\(k.gradeName)，丢 \(k.loss) 分"))
+                if !k.best.isEmpty { L.append("      引擎认为该走：\(k.best)") }
+            }
+        }
+
+        if counts.missedMate > 0 {
+            L.append("")
+            L.append("【漏杀】有 \(counts.missedMate) 手本来可以直接成杀，没有走出来。")
+        }
+
+        L.append("")
+        L.append("【结论】")
+        if let w = worst, let wl = w.avgLoss, wl > 0 {
+            L.append("  平均丢分最高的是\(w.name)（\(wl) 分 / 手，\(w.moves) 手）。"
+                     + "整体平均 \(avgLoss) 分 / 手。")
+        } else {
+            L.append("  这盘没有值得单拎出来的阶段性问题。整体平均 \(avgLoss) 分 / 手。")
+        }
+        if counts.blunder > 0, let top = keys.first(where: { $0.grade == "blunder" }) {
+            L.append("  最大的一处是第 \(top.ply) 手的 \(top.played)（丢 \(top.loss) 分）。")
+        }
+        return L.joined(separator: "\n")
+    }
+
+    /// 喂给大模型的结构化事实。与 `text` 同一份数据，
+    /// 但去掉了「结论」段 —— 那一段是留给模型写的。
+    var promptLines: [String] {
+        var L: [String] = []
+        L.append("【已由本地引擎逐手算好，可直接引用，不要自行推测】")
+        var head = "我执红方，共 \(rounds) 回合。严重失误 \(counts.blunder) 次、"
+            + "失误 \(counts.mistake) 次、不够精确 \(counts.inaccuracy) 次"
+        if counts.missedMate > 0 { head += "、漏杀 \(counts.missedMate) 次" }
+        L.append(head + "。")
+        let ph = phases.filter { $0.moves > 0 }
+            .map { "\($0.name) \($0.moves) 手/平均丢 \($0.avgLoss ?? 0) 分" }
+        L.append("分阶段：" + ph.joined(separator: "；") + "。")
+        if keys.isEmpty {
+            L.append("没有严重失误、失误或漏杀。")
+        } else {
+            L.append("按丢分排序的关键时刻（「丢分」= 引擎认为的最好走法与我实际走法之间的分差）：")
+            for k in keys {
+                var s = "  · 第 \(k.ply) 手（第 \(k.round) 回合，\(k.phase)）我走了 \(k.played)，丢 \(k.loss) 分"
+                if k.missedMate { s += "（这一步本来可以直接成杀）" }
+                if !k.best.isEmpty { s += "；引擎建议走 \(k.best)" }
+                L.append(s + "。")
+            }
+        }
+        return L
     }
 }
 
@@ -206,7 +416,8 @@ final class Archive: ObservableObject {
 
                 completion(MoveEval(ply: 0, redScore: actual, loss: loss, grade: grade,
                                     bestLabel: best.move.map { Notation.label(board: board, move: $0) } ?? "",
-                                    phase: phase, missedMate: missedMate))
+                                    phase: phase, missedMate: missedMate,
+                                    playedLabel: Notation.label(board: board, move: move)))
             }
         }
     }

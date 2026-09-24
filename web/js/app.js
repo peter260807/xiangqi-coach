@@ -208,13 +208,46 @@
 
   /* ---------- 场景 ---------- */
 
+  /* 杀法按来源分组。
+     导入公开题库之后这里会有几百道题 —— **不能一次全渲染**，
+     几百个 DOM 行在手机上会明显卡顿，下拉框也会变成没法用的一长条。
+     库里手写的那 11 道不带 `set`，会自然排在最前面（它们是带讲解的入门题）。 */
+  var MATE_PAGE = 40;
+  function mateGroups() {
+    var groups = [], idx = {};
+    XQLIB.MATES.forEach(function (m) {
+      var key = m.set || '';
+      if (!idx[key]) { idx[key] = { label: key, items: [] }; groups.push(idx[key]); }
+      idx[key].items.push(m);
+    });
+    return groups;
+  }
+  function mateBadge(m) {
+    if (m.mateIn === 1) return '一';
+    if (m.mateIn === 2) return '二';
+    if (m.mateIn >= 3) return '多';
+    return m.tier === 1 ? '一' : '二';
+  }
+
   function buildScenes() {
     var html = '<optgroup label="对局"><option value="start">标准开局（红先）</option></optgroup>';
     html += '<optgroup label="名局（可逐步演示）">';
     (XQLIB.CLASSICS || []).forEach(function (c) { html += '<option value="classic:' + c.id + '">' + c.name + '</option>'; });
-    html += '</optgroup><optgroup label="杀法练习（红先成杀）">';
-    XQLIB.MATES.forEach(function (m) { html += '<option value="mate:' + m.id + '">' + m.name + '</option>'; });
-    html += '</optgroup><optgroup label="开局库（标准着法）">';
+    html += '</optgroup>';
+    /* 杀法分来源放在各自的 optgroup 里。每组最多列 MATE_PAGE 条 ——
+       下拉框里塞几百个选项等于没法用，想看全的去「训练」页。 */
+    mateGroups().forEach(function (g) {
+      var label = g.label ? ('杀法·' + g.label + '（' + g.items.length + '）') : '杀法练习（红先成杀）';
+      html += '<optgroup label="' + label + '">';
+      g.items.slice(0, MATE_PAGE).forEach(function (m) {
+        html += '<option value="mate:' + m.id + '">' + m.name + '</option>';
+      });
+      if (g.items.length > MATE_PAGE) {
+        html += '<option disabled>…… 还有 ' + (g.items.length - MATE_PAGE) + ' 道，见「训练」页</option>';
+      }
+      html += '</optgroup>';
+    });
+    html += '<optgroup label="开局库（标准着法）">';
     XQLIB.OPENINGS.forEach(function (o) { html += '<option value="opening:' + o.id + '">' + o.name + '</option>'; });
     html += '</optgroup><optgroup label="实用残局（红先取胜）">';
     XQLIB.STUDIES.forEach(function (s) { html += '<option value="study:' + s.id + '">' + s.name + '</option>'; });
@@ -243,7 +276,10 @@
     } else if (id.indexOf('mate:') === 0) {
       var m = XQLIB.findById(XQLIB.MATES, id.slice(5));
       startFen = m.fen; board = XQ.parseBoard(startFen); sceneName = '杀法 · ' + m.name;
-      note = m.idea + '\n\n轮到你走，找出成杀的那一步。想不出来就点「提示」，或用「看解法」逐步演示。';
+      /* 导入的题没有 idea（讲解是手写那 11 道才有的），别让提示里露出 "undefined" */
+      var lead = m.idea || (m.set ? ('选自《' + m.set + '》。') : '');
+      note = (lead ? lead + '\n\n' : '') + '轮到你走，找出成杀的那一步。想不出来就点「提示」，或用「看解法」逐步演示。'
+        + '\n\n（排局类题目的红方常常子力大落后，下方评估条因此可能显示对面占优 —— 它只反映子力，别以它为准。）';
       XQSTORE.markDrillAttempt(id);
       demoPrepare(m.line || [], []);
     } else if (id.indexOf('study:') === 0) {
@@ -301,6 +337,14 @@
     lastMove = m; selected = -1; hintMove = null;
     turn = XQ.other(turn);
     refreshLegal();
+
+    /* **每一步**都要记进 record（红黑都算），不能只在分析完红方那一手时记 ——
+       否则 record.moves 只有红方的着法、record.ply 只有红方手数，
+       存档列表的「N 回合」少一半，复盘重放会走成另一盘棋。见 storage.recordMove 的注释。 */
+    if (record) {
+      record.moves.push([m[0], m[1]]);
+      record.ply = history.length;
+    }
 
     if (opts.track) pending = { preBoard: pre, move: m, ply: ply };
 
@@ -439,7 +483,7 @@
       try {
         a = XQSTORE.analyzeMove(job.preBoard, job.move, { depth: 4, budget: 450 });
       } catch (e) { a = null; }
-      if (record) XQSTORE.recordMove(record, job.preBoard, job.move, a, phase);
+      if (record) XQSTORE.recordMove(record, job.preBoard, job.move, a, phase, job.ply);
       XQ.syncHash(board, turn);
       renderMoves();
       renderStats();
@@ -454,7 +498,7 @@
     try {
       var phase = XQSTORE.phaseFor(job.preBoard, job.ply);
       var a = XQSTORE.analyzeMove(job.preBoard, job.move, { depth: 4, budget: 450 });
-      if (record) XQSTORE.recordMove(record, job.preBoard, job.move, a, phase);
+      if (record) XQSTORE.recordMove(record, job.preBoard, job.move, a, phase, job.ply);
     } catch (e) {}
   }
 
@@ -543,9 +587,19 @@
 
   /* ---------- 评估 ---------- */
 
+  /* 评估条要跟着每一手实时刷新，所以用浅搜索（depth 3）。
+     但**杀法题必须更深**：从公开题库导入的题最深到六手，depth 3 一次都看不到杀棋
+     （实测 60 个抽样里 0 个），评估条会显示「黑方明显占优」—— 而红方其实有必杀，
+     这会把学生直接带偏。组成局面子力少、加深很便宜（实测 depth 6 平均 44ms），
+     所以按场景区分。depth 8 能多看到一些（25/60）但要 150ms，实时刷新不划算；
+     剩下的由 paintEval 的文案兜底。 */
+  function evalDepth() {
+    return sceneId.indexOf('mate:') === 0 ? 6 : 3;
+  }
+
   function updateEval() {
     if (gameOver) return;
-    var r = XQ.searchRoot(board, turn, 3, 500);
+    var r = XQ.searchRoot(board, turn, evalDepth(), 500);
     redScore = turn === 'r' ? r.score : -r.score;
     paintEval();
     XQ.syncHash(board, turn);
@@ -561,7 +615,14 @@
     elRedPct.textContent = redPct + '%';
     elBlackPct.textContent = (100 - redPct) + '%';
     elEvalFill.style.width = redPct + '%';
-    elEvalText.textContent = (gameOver && evalOverride) ? evalOverride : formatEval(redScore);
+    var txt = (gameOver && evalOverride) ? evalOverride : formatEval(redScore);
+    /* 杀法题里红方常常子力大落后（古谱排局就是这样设计的），
+       所以评估条会显示对面占优 —— 而红方其实有必杀。数值不改（它是真实的子力差），
+       但标一句来源，免得被读成「这局要输」。 */
+    if (!gameOver && sceneId.indexOf('mate:') === 0 && Math.abs(redScore) < XQ.MATE - 1000) {
+      txt += '（按子力）';
+    }
+    elEvalText.textContent = txt;
   }
 
   /* ---------- 走子记录 ---------- */
@@ -821,29 +882,57 @@
 
   btnCoach.onclick = function () { coach(null); };
 
-  btnReview.onclick = function () {
+  /* 复盘分两层，顺序很重要：
+     ① **本地复盘卡** —— 完全由已经算好的逐手数据生成（丢分 / 评价 / 引擎建议）。
+        不需要 API Key、不用等网络、几毫秒出，而且事实是确定的。
+     ② **大模型讲解** —— 可选。把①那份结构化事实整段喂进去，让模型只负责
+        「为什么」和「练什么」，而不是让它从一串分数里猜哪一步是转折点。
+     原来两层是绑死的（点复盘先 requireConfig()），结果没配 Key 就完全用不了复盘 ——
+     而复盘最有价值的那部分信息本来就在本地。 */
+  function localReview() {
+    if (!record || !record.evals || !record.evals.length) {
+      showPanel('复盘', '这盘还没有逐手分析数据。\n\n'
+        + '引擎是在你每走一步之后顺手打分（深度 4），走几步再回来就有了。\n'
+        + '（打谱演示模式不做逐手分析，那种局面请用「教练点评」。）');
+      return null;
+    }
+    var d = XQSTORE.reviewDigest(record);
+    if (!d) { showPanel('复盘', '这盘还没有逐手分析数据。'); return null; }
+    showPanel('复盘报告（本地引擎）', d.text);
+    return d;
+  }
+
+  function reviewResultText() {
+    return !gameOver ? '对局进行中'
+      : (record && record.result === 'win' ? '红方（你）获胜'
+        : (record && record.result === 'draw' ? '和棋' : '黑方获胜'));
+  }
+
+  function aiReview(d) {
     if (aiBusy || !requireConfig()) return;
-    if (history.length < 6) { showPanel('复盘', '至少走满 3 个回合再复盘比较有意义，先多下几步。'); return; }
     aiBusy = true;
-    showPanel('复盘报告', '正在整理棋谱…');
     var moveText = XQ.movesToText(startFen, history.map(function (h) { return h.m; }));
-    var trace = (record && record.evals ? record.evals : []).map(function (e) { return '第' + e.ply + '手 ' + e.redScore; });
+    /* 旧存档可能没有逐手分析，digest 会是 null —— 那时退回原来的分数串 */
+    var trace = (record && record.evals ? record.evals : [])
+      .map(function (e) { return '第' + e.ply + '手 ' + e.redScore; });
+    showPanel('复盘报告（大模型）', '正在讲解…');
     var t0 = Date.now();
     XQAI.chat(XQAI.reviewMessages({
       moveText: moveText,
-      result: !gameOver ? '对局进行中'
-        : (record && record.result === 'win' ? '红方（你）获胜'
-          : (record && record.result === 'draw' ? '和棋' : '黑方获胜')),
-      endBoard: board, evalTrace: trace
+      result: reviewResultText(),
+      endBoard: board,
+      digestLines: d ? XQSTORE.digestLines(d) : null,
+      evalTrace: trace
     }), {
       // 跟随设置里的 max_tokens（默认 5 万），不再写死 8000
       onRetry: function (n, tokens) { panelBody.textContent = '上一次输出被思维链占满，正在用更大的预算重试（' + tokens + ' token）…'; },
-      onReasoning: function (d, all) { panelTitle.textContent = '复盘报告（思考中 ' + all.length + ' 字）'; },
-      onDelta: function (d, all) { panelBody.textContent = all; }
+      onReasoning: function (dl, all) { panelTitle.textContent = '复盘报告（思考中 ' + all.length + ' 字）'; },
+      onDelta: function (dl, all) { panelBody.textContent = all; }
     }).then(function (r) {
       afterAi(r, t0);
       if ((r.content || '').trim()) {
         panelFoot.innerHTML = '';
+        panelAction('看数据版', function () { localReview(); });
         panelAction('复制棋谱', function () {
           if (navigator.clipboard) navigator.clipboard.writeText(moveText);
           else window.prompt('复制棋谱', moveText);
@@ -853,6 +942,17 @@
       panelBody.textContent = '调用失败：' + e.message;
       panelBody.className = 'panel-body err';
     }).finally(function () { aiBusy = false; });
+  }
+
+  btnReview.onclick = function () {
+    if (history.length < 6) { showPanel('复盘', '至少走满 3 个回合再复盘比较有意义，先多下几步。'); return; }
+    var d = localReview();
+    if (!d) return;
+    if (!XQAI.isConfigured()) {
+      panelAction('要让大模型讲讲？先填 API Key', openSettings);
+      return;
+    }
+    panelAction('让大模型讲讲', function () { aiReview(d); });
   };
 
   /* ---------- 训练页 ---------- */
@@ -878,14 +978,32 @@
     solved.forEach(function (s) { solvedSet[s] = 1; });
     var mateSolved = XQLIB.MATES.filter(function (m) { return solvedSet['mate:' + m.id]; }).length;
     $('mateProgress').textContent = mateSolved + ' / ' + XQLIB.MATES.length + ' 已通';
-    $('mateList').innerHTML = XQLIB.MATES.map(function (m) {
-      var done = solvedSet['mate:' + m.id];
-      return '<div class="drill" data-scene="mate:' + m.id + '">' +
-        '<span class="badge" style="' + (done ? 'background:#e6f4ef;color:#0f6e56' : 'background:#f4f1ea;color:#938b7e') + '">' +
-        (done ? '✓' : (m.tier === 1 ? '一' : '二')) + '</span>' +
-        '<span class="meta"><span class="t">' + m.name + '</span>' +
-        '<span class="d">' + (m.tier === 1 ? '一步杀' : '两步杀') + '</span></span>' +
-        '<span class="go">›</span></div>';
+    /* 按来源分组、每组只展开前 MATE_PAGE 道 —— 见 mateGroups() 的注释。
+       未通关的排在前面，这样「下一道该练什么」永远在第一屏。 */
+    $('mateList').innerHTML = mateGroups().map(function (g) {
+      var items = g.items.slice().sort(function (a, b) {
+        var da = solvedSet['mate:' + a.id] ? 1 : 0, db = solvedSet['mate:' + b.id] ? 1 : 0;
+        if (da !== db) return da - db;                        /* 没通关的在前 */
+        return (a.mateIn || 99) - (b.mateIn || 99);           /* 再按手数从少到多 */
+      });
+      var head = g.label
+        ? '<div style="font-size:12px;color:#938b7e;margin:10px 0 4px">' + g.label
+          + '　共 ' + items.length + ' 道</div>'
+        : '';
+      var rows = items.slice(0, MATE_PAGE).map(function (m) {
+        var done = solvedSet['mate:' + m.id];
+        return '<div class="drill" data-scene="mate:' + m.id + '">' +
+          '<span class="badge" style="' + (done ? 'background:#e6f4ef;color:#0f6e56' : 'background:#f4f1ea;color:#938b7e') + '">' +
+          (done ? '✓' : mateBadge(m)) + '</span>' +
+          '<span class="meta"><span class="t">' + m.name + '</span>' +
+          '<span class="d">' + XQSTORE.tierText(m) + '</span></span>' +
+          '<span class="go">›</span></div>';
+      }).join('');
+      if (items.length > MATE_PAGE) {
+        rows += '<div class="empty-state">…… 这里还有 ' + (items.length - MATE_PAGE)
+          + ' 道未列出（列表太长会拖慢页面）。先把上面这些练完。</div>';
+      }
+      return head + rows;
     }).join('');
 
     $('openingList').innerHTML = XQLIB.OPENINGS.map(function (o) {

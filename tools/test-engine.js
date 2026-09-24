@@ -76,7 +76,15 @@ ok &= check('照面时车不能离开中线', XQ.legalMoves(blocked, 'r').length
 const LIB = require('../web/js/library.js');
 const rep = LIB.validateLibrary();
 console.log('\n--- 棋谱库校验 ---');
-rep.mates.forEach(r => { ok &= check('杀法「' + r.name + '」红先成杀', r.pass, '最佳 ' + r.best + '，杀着数 ' + r.solutions); });
+/* 有解法路线的条目，判据是「走一遍这条路线的结果」；没有时才是搜索判据。
+   两种判据的说明要分开写，别把「路线已验证」说成「杀着数 1」——那是两回事。 */
+rep.mates.forEach(r => {
+  const how = r.linePlies
+    ? ('路线 ' + r.linePlies + ' 步已验证' + (r.mateInOk ? '' : '，但与 mateIn 对不上'))
+      + (r.lineError ? '，第「' + r.lineError + '」步走不出来' : '')
+    : ('搜索判据：最佳 ' + r.best + '，杀着数 ' + r.solutions);
+  ok &= check('杀法「' + r.name + '」红先成杀', r.pass, how);
+});
 rep.openings.forEach(r => { ok &= check('开局「' + r.name + '」着法合法', r.pass, r.moves + ' 着' + (r.error ? ' ' + r.error : '')); });
 rep.studies.forEach(r => { ok &= check('残局「' + r.name + '」红方明显占优', r.pass, '评估 ' + r.score); });
 

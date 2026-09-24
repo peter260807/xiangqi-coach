@@ -7,12 +7,30 @@ struct MatePuzzle: Codable, Identifiable {
     let name: String
     let tier: Int
     let fen: String
-    let idea: String
-    /// 由 tools/gen-lines.js 离线算出的解法路线（红黑双方都走引擎首选，
-    /// 也就是「最顽强防守下仍然成立的最短杀法」）。
+    /// 手写的那 11 道带讲解；从公开题库导入的没有这一项。
+    /// ⚠️ 必须是**可选** —— 否则导入之后整个 library.json 都会解码失败
+    /// （Codable 遇到缺字段是直接抛错，不会退化成空串），题库会变成空的。
+    let idea: String?
+    /// 导入来源，例如「适情雅趣」「基本杀法」。手写的 11 道没有这一项。
+    let set: String?
+    /// 由 tools/gen-lines.js（或 tools/import-puzzles.js）离线算出的解法路线
+    /// （红黑双方都走引擎首选，也就是「最顽强防守下仍然成立的最短杀法」）。
     /// 老版本库文件里没有这一项，所以是可选的。
     let line: [String]?
     let mateIn: Int?
+
+    /// 难度文案。`tier` 只有 1/2 两档（手写库用的），导入的题最多到 3，
+    /// 所以优先按 mateIn 说清楚。
+    var difficultyText: String {
+        let n = mateIn ?? 0
+        if n >= 1 && n <= 10 {
+            let cn = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]
+            return cn[n - 1] + "步杀"
+        }
+        if tier == 1 { return "一步杀" }
+        if tier == 2 { return "两步杀" }
+        return "多步杀"
+    }
 }
 
 struct OpeningLine: Codable, Identifiable {
@@ -50,6 +68,15 @@ struct ClassicGame: Codable, Identifiable {
     let highlights: [ClassicNote]?
 }
 
+/// 杀法分组。**必须是具名结构体，不能返回元组数组** ——
+/// SwiftUI 的 `ForEach(id:)` 要一个 `KeyPath`，而 Swift 不支持指向元组成员的 key path，
+/// 用元组会在编译期就报错（"key path cannot refer to tuple element"）。
+struct MateGroup: Identifiable {
+    var id: String { label }
+    let label: String
+    let items: [MatePuzzle]
+}
+
 struct XiangqiLibrary: Codable {
     var version: Int
     var mates: [MatePuzzle]
@@ -59,6 +86,28 @@ struct XiangqiLibrary: Codable {
     var classics: [ClassicGame]?
 
     var allClassics: [ClassicGame] { classics ?? [] }
+
+    /// 杀法按来源分组。导入公开题库之后这里会有几百道题，
+    /// 平铺一列既难找也难看；库里手写的 11 道不带 `set`，自然排在最前面。
+    /// `solved` 是「已通关的 id 集合」（带 "mate:" 前缀），用于把没做过排在前面。
+    func mateGroups(solved: Set<String> = []) -> [MateGroup] {
+        var order: [String] = []
+        var bucket: [String: [MatePuzzle]] = [:]
+        for m in mates {
+            let k = m.set ?? ""
+            if bucket[k] == nil { bucket[k] = []; order.append(k) }
+            bucket[k]!.append(m)
+        }
+        return order.map { k in
+            let items = (bucket[k] ?? []).sorted { a, b in
+                let da = solved.contains("mate:\(a.id)") ? 1 : 0
+                let db = solved.contains("mate:\(b.id)") ? 1 : 0
+                if da != db { return da < db }             // 没通关的在前
+                return (a.mateIn ?? 99) < (b.mateIn ?? 99) // 再按手数从少到多
+            }
+            return MateGroup(label: k, items: items)
+        }
+    }
 
     static let empty = XiangqiLibrary(version: 0, mates: [], openings: [], studies: [], classics: [])
 
@@ -132,10 +181,16 @@ enum SceneCatalog {
                              demoNotes: notes))
         }
         for m in lib.mates {
+            /* 导入的题没有 idea（讲解是手写那 11 道才有的），
+               用来源名兜底，别在提示里露出 "nil" 或空行。 */
+            let lead = m.idea ?? (m.set.map { "选自《\($0)》。" } ?? "")
+            let hint = "轮到你走，找出成杀的那一步。"
+                + "想不出来可以点「提示」，或用「看解法」逐步演示。"
+                + "\n\n（排局类题目的红方常常子力大落后，下方评估条因此可能显示对面占优 —— "
+                + "它只反映子力，别以它为准。）"
             out.append(XQScene(id: "mate:\(m.id)", kind: .mate, title: m.name,
                              startFEN: m.fen,
-                             note: m.idea + "\n\n轮到你走，找出成杀的那一步。"
-                                 + "想不出来可以点「提示」，或用「看解法」逐步演示。",
+                             note: lead.isEmpty ? hint : lead + "\n\n" + hint,
                              preloadLabels: [],
                              demoLine: m.line ?? []))
         }

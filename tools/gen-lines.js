@@ -9,6 +9,13 @@
  * 同时它也是一道校验：算不出杀棋的局面会在这里被标出来。
  *
  * 运行：node tools/gen-lines.js [最大层数]
+ *
+ * ⚠️ **只处理手写的那几道（没有 `set` 字段的）**。
+ * 从公开题库导入的题（见 tools/import-puzzles.js）是**在深度 13 上**解出来的，
+ * 而这里的默认深度只有 7 —— 如果不加限制地跑一遍，算不出来的那些会被
+ * `delete m.line` 清掉解法（这是本脚本对失败条目的处理方式），
+ * 于是一次「重算入门杀法」会把几百条导入题的解法静默抹掉。
+ * 那些条目由 import-puzzles.js 负责，不要在这里动。
  */
 const fs = require('fs');
 const path = require('path');
@@ -61,8 +68,10 @@ function solve(fen, startSide) {
 
 let fail = 0;
 const report = [];
+const manual = data.mates.filter((m) => !m.set);
+const imported = data.mates.length - manual.length;
 
-for (const m of data.mates) {
+for (const m of manual) {
   const res = solve(m.fen, 'r');
   const mateStep = res.steps.find((s) => s.mate);
   const ok = res.finished && mateStep && mateStep.side === 'r';
@@ -99,9 +108,20 @@ for (const o of data.openings) {
 
 console.log('引擎深度 ' + DEPTH + '，时间上限 ' + BUDGET_MS + 'ms\n');
 report.forEach((r) => console.log(r));
-console.log('\n' + (fail === 0 ? '全部 ' + data.mates.length + ' 个杀局都算出了成杀路线' : fail + ' 个杀局没能算出成杀'));
+console.log('\n' + (fail === 0 ? '全部 ' + manual.length + ' 个手写杀局都算出了成杀路线' : fail + ' 个杀局没能算出成杀'));
+if (imported) {
+  console.log('（跳过了 ' + imported + ' 个从公开题库导入的杀局 —— 它们在深度 13 上解出，'
+    + '由 tools/import-puzzles.js 负责；本脚本深度只有 ' + DEPTH + '，'
+    + '对它们跑一遍会把算不出来的那些解法清空。见文件头注释。）');
+}
 
-data.note = '中国象棋棋谱库。杀法局的 line 字段是由 tools/gen-lines.js 用引擎离线算出的最短杀法路线（双方均走最强）。';
+/* ⚠️ `note` 是**共享字段**，两边都写会被互相覆盖。
+   这里只在没有导入条目时保留原来的措辞；有导入条目时写明两个来源，
+   否则 import-puzzles.js 写的那句会被这个脚本悄悄改回去。 */
+data.note = imported
+  ? '中国象棋棋谱库。杀法局的 line 是由引擎离线算出的最短杀法路线（双方均走最强）：'
+    + 'm* 由 tools/gen-lines.js 生成；x* 由 tools/import-puzzles.js 从公开题库（MIT）导入并计算。'
+  : '中国象棋棋谱库。杀法局的 line 字段是由 tools/gen-lines.js 用引擎离线算出的最短杀法路线（双方均走最强）。';
 fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2) + '\n');
 console.log('已写回 ' + path.relative(root, jsonPath));
 

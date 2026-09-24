@@ -70,28 +70,47 @@ enum Prompts {
         var result: String
         var endBoard: [Int8]
         var evalTrace: [String]
+        /// 结构化事实，来自 `ReviewDigest.promptLines`。
+        /// 有它的时候优先用它，`evalTrace` 只是旧存档的退路。
+        var digestLines: [String] = []
     }
 
+    /// 赛后复盘。
+    ///
+    /// 这里改过一版，值得说明为什么：原来只把「第 N 手 <分数>」这一串数字
+    /// 连成一长条给模型，而每手的 grade / loss / bestLabel / phase / missedMate
+    /// 明明都算出来了却没传 —— 模型拿到一串没有语义的分数，只能靠猜去指认
+    /// 「哪一步是转折点」，指错的时候人还看不出来（因为输出很像回事）。
+    ///
+    /// 现在的事实来自 ReviewDigest：哪一手、丢了多少分、评价是什么、
+    /// 引擎建议走哪里，都是确定的。模型只负责把「为什么」讲清楚、给练习建议。
+    /// 并且明确禁止它另造着法 —— 复盘里出现的着法必须能对回引擎给的那一条。
     static func review(_ ctx: ReviewContext) -> [[String: String]] {
         var lines: [String] = []
         lines.append("【对局记录】")
         lines.append(ctx.moveText.isEmpty ? "（无）" : ctx.moveText)
         lines.append("")
         lines.append("【结果】\(ctx.result)")
-        if !ctx.evalTrace.isEmpty {
+        if !ctx.digestLines.isEmpty {
             lines.append("")
-            lines.append("【引擎评估变化】（每手红方视角）")
+            lines.append(contentsOf: ctx.digestLines)
+        } else if !ctx.evalTrace.isEmpty {
+            lines.append("")
+            lines.append("【引擎评估变化】（每手红方视角，单位厘兵）")
             lines.append(ctx.evalTrace.joined(separator: "，"))
         }
         lines.append("")
         lines.append("【终局面】")
         lines.append(boardASCII(ctx.endBoard))
         lines.append("")
-        lines.append("【任务】做一份复盘报告，用小标题分成三段：")
+        lines.append("【任务】写一份复盘报告，用小标题分成三段：")
         lines.append("1. 开局：布局是否合理，有没有明显失先手；")
-        lines.append("2. 中局：找出 1~2 个关键转折点，指出具体哪一着走错了、应该走什么；")
-        lines.append("3. 总结：给 2~3 条可以马上练习的改进建议。")
-        lines.append("全文不要超过 500 字。")
+        lines.append("2. 中局：从上面「关键时刻」里挑最重要的 1～2 处，说明这一步错在哪、为什么引擎建议的那一步更好；")
+        lines.append("3. 总结：给 2～3 条可以马上练习的改进建议，并指出对应上面哪个阶段。")
+        lines.append("【硬性要求】")
+        lines.append("· 只允许引用上面已经列出的着法与分数，不要自己另算或另造着法；")
+        lines.append("· 如果某个阶段的数据不足（手数很少），就直说「样本太少，先不下结论」；")
+        lines.append("· 全文不要超过 500 字。")
         return [
             ["role": "system", "content": systemCoach + "你正在做赛后复盘。"],
             ["role": "user", "content": lines.joined(separator: "\n")]

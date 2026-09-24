@@ -61,11 +61,46 @@
       r.redMoves = XQ.legalMoves(b, 'r').length;
       r.blackHasMove = XQ.hasLegalMove(b, 'b');
       r.blackNotChecked = !XQ.inCheck(b, 'b');
-      var res = r.redMoves > 0 ? XQ.searchRoot(b, 'r', 6, 8000) : { score: 0, move: null, depth: 0 };
-      r.mate = res.score > XQ.MATE - 1000;
-      r.best = res.move ? XQ.moveLabel(b, res.move) : null;
-      r.depth = res.depth;
-      r.solutions = matingMoves(p.fen).length;
+
+      if (p.line && p.line.length) {
+        /* **有解法路线时，直接走一遍验证它** —— 又快又更强。
+         * 判据：① 每一步都能识别且合法；② 最后是红方走完、黑方无子可动（真成杀）；
+         *       ③ 步数与 mateIn 对得上。
+         *
+         * 以前这里用「depth 6 搜索能不能看到杀棋分」当判据。对一步杀/两步杀成立，
+         * 但从公开题库导入的题最深到六手（11 步），depth 6 根本看不到 ——
+         * 456 条全部被误报成失败，而且代价是每条一次搜索（整套跑 46 秒）。
+         * 更根本的问题是：搜索判据验证的是「引擎能不能看到杀」，
+         * 而我们真正要保证的是「**库里存的那条路线是对的**」（它就是给学生看的那个）。 */
+        var bb = XQ.parseBoard(p.fen);
+        var side = 'r';
+        var bad = null;
+        for (var i = 0; i < p.line.length; i++) {
+          var mv = XQ.findMoveByLabel(bb, side, p.line[i]);
+          if (!mv) { bad = p.line[i]; break; }
+          XQ.makeMove(bb, mv);
+          side = XQ.other(side);
+        }
+        r.lineError = bad;
+        r.linePlies = p.line.length;
+        r.mated = !bad && !XQ.hasLegalMove(bb, side);
+        /* 红先且步数为奇数时，走完最后一手轮到黑方 —— 这才是「红方成杀」 */
+        r.redMated = r.mated && side === 'b';
+        r.mateInOk = p.mateIn ? (p.line.length === 2 * p.mateIn - 1) : true;
+        r.mate = r.redMated && r.mateInOk;
+        r.best = p.line[0];
+        /* 不编「杀着数」—— 走一遍只证明**这一条**路线对，
+           证明不了「还有没有别的杀法」。调用方据 linePlies 判断用的是哪种判据。 */
+        r.solutions = null;
+      } else {
+        /* 没有路线（老库）就退回搜索判据 */
+        var res = r.redMoves > 0 ? XQ.searchRoot(b, 'r', 6, 8000) : { score: 0, move: null, depth: 0 };
+        r.mate = res.score > XQ.MATE - 1000;
+        r.best = res.move ? XQ.moveLabel(b, res.move) : null;
+        r.depth = res.depth;
+        r.solutions = r.redMoves ? matingMoves(p.fen).length : 0;
+      }
+
       r.pass = r.redMoves > 0 && r.blackHasMove && r.blackNotChecked && r.mate;
       if (!r.pass) report.ok = false;
       report.mates.push(r);

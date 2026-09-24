@@ -9,6 +9,8 @@ struct TrainView: View {
 
     /// 列表在 iPad 上自动排成两列，iPhone 上仍然是一列
     private let drillCols = [GridItem(.adaptive(minimum: 340), spacing: 10)]
+    /// 每组杀法最多展开多少道。与网页端 app.js 的 MATE_PAGE 保持一致。
+    private let matePageSize = 40
 
     var body: some View {
         ScrollView {
@@ -32,16 +34,29 @@ struct TrainView: View {
                     }
                 }
 
-                SectionHeader(title: "杀法练习",
-                              trailing: "\(archive.solvedDrills.filter { $0.hasPrefix("mate:") }.count) / \(library.mates.count) 已通")
-                LazyVGrid(columns: drillCols, spacing: 10) {
-                    ForEach(library.mates) { m in
-                        let done = archive.solvedDrills.contains("mate:\(m.id)")
-                        DrillRow(badge: done ? "✓" : (m.tier == 1 ? "一" : "二"),
-                                 title: m.name,
-                                 subtitle: "\(m.tier == 1 ? "一步杀" : "两步杀") · \(m.idea.prefix(28))…") {
-                            openScene("mate:\(m.id)")
+                /* 杀法按来源分组、每组只展开前 40 道。
+                   导入公开题库之后这里会有几百道题 —— 平铺一列既难找也难看。
+                   组内「没通关的在前、手数少的在前」，所以下一道该练什么永远在第一屏。
+                   （与网页端 app.js 的 mateGroups / MATE_PAGE 是同一套做法。） */
+                let groups = library.mateGroups(solved: Set(archive.solvedDrills))
+                ForEach(groups, id: \.label) { g in
+                    SectionHeader(title: g.label.isEmpty ? "杀法练习" : "杀法 · \(g.label)",
+                                  trailing: "\(g.items.filter { archive.solvedDrills.contains("mate:\($0.id)") }.count) / \(g.items.count) 已通")
+                    LazyVGrid(columns: drillCols, spacing: 10) {
+                        ForEach(Array(g.items.prefix(matePageSize))) { m in
+                            let done = archive.solvedDrills.contains("mate:\(m.id)")
+                            DrillRow(badge: done ? "✓" : "杀",
+                                     title: m.name,
+                                     subtitle: m.difficultyText) {
+                                openScene("mate:\(m.id)")
+                            }
                         }
+                    }
+                    if g.items.count > matePageSize {
+                        Text("…… 这一组还有 \(g.items.count - matePageSize) 道未列出（列表太长会拖慢页面）。先把上面这些练完。")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Palette.ink3)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
 

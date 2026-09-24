@@ -98,7 +98,12 @@
     return {
       bestScore: bestScore, bestLabel: bestLabel,
       actualScore: actualScore, loss: loss,
-      grade: grade, missedMate: missedMate
+      grade: grade, missedMate: missedMate,
+      /* 走的那一手的中文记谱，**在这里记下来**（此刻 beforeBoard 与 move 都在手上）。
+         以前是复盘时靠 record.moves 重放去反推 —— 而 record.moves 当时只有红方着法，
+         重放出来的棋是错的，`played` 会指向另一盘棋上的一手。
+         存下来就没有"反推"这一步，也就不会有错位的可能。 */
+      playedLabel: XQ.moveLabel(beforeBoard, move)
     };
   }
 
@@ -124,16 +129,29 @@
     };
   }
 
-  function recordMove(game, board, move, analysis, phase) {
-    game.ply++;
-    game.moves.push([move[0], move[1]]);
+  /* 记一手棋的分析结果。
+   *
+   * ⚠️ 这里**不再**维护 `game.moves` / `game.ply`。
+   * 原来 `game.moves.push(...)` 写在这个函数里，而这个函数**只在红方落子后被调用**
+   * （黑方是引擎走的，不分析）—— 于是 `record.moves` 里只有红方的着法、
+   * `record.ply` 只有红方的手数。后果有两个，都是静默的：
+   *   · 存档列表显示「N 回合」少了一半；
+   *   · 复盘重放 `record.moves` 去反推每一步的记谱时，走的是**另一盘棋**，
+   *     `played` 会指到不相干的一手，而输出读起来完全正常。
+   * 现在由 app.js 的 `playMove` 对**每一步**维护（红黑都算），
+   * `ply` 也由调用方传进来（那一手在整局里的序号）。
+   */
+  function recordMove(game, board, move, analysis, phase, ply) {
     if (analysis) {
       game.evals.push({
-        ply: game.ply,
+        /* 回退到「已有分析条数 + 1」：红方每走一步都会产生一条分析，
+           所以这个数就是红方着法的序号，也是整局手数 (2n-1)。 */
+        ply: ply || (game.evals.length + 1),
         redScore: analysis.actualScore,
         loss: analysis.loss,
         grade: analysis.grade,
         bestLabel: analysis.bestLabel,
+        playedLabel: analysis.playedLabel || '',
         phase: phase
       });
       if (analysis.grade === 'blunder') game.flags.blunders++;
@@ -148,6 +166,204 @@
     if (ply <= OPENING_PLIES) return 'opening';
     if (materialOf(board).total < ENDGAME_MATERIAL) return 'end';
     return 'mid';
+  }
+
+  /* ---------- 复盘摘要 ---------- */
+
+  var PHASE_NAME = { opening: '开局', mid: '中局', end: '残局' };
+  var GRADE_NAME = { blunder: '严重失误', mistake: '失误', inaccuracy: '不够精确', ok: '正常' };
+  var CN_NUM = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+
+  /* 难度文案。tier 1/2 是手写的 m1~m11 用的；导入的题最多到 tier 3（三步及以上）。
+     原来这里写的是 `tier === 1 ? '一步杀' : '两步杀'` —— 导入之后
+     三步以上的题会被显示成「两步杀」，是错的。 */
+  function tierText(m) {
+    if (m && m.mateIn >= 1 && m.mateIn <= 10) return CN_NUM[m.mateIn - 1] + '步杀';
+    var t = (m && m.tier) || 1;
+    return t === 1 ? '一步杀' : (t === 2 ? '两步杀' : '多步杀');
+  }
+
+  /* 把**已经算好的**逐手分析整理成一份结构化复盘。
+   *
+   * 起因：复盘原来只把「第N手 <分数>」这一串数字喂给大模型，
+   * 而每手其实都算出了 loss / grade / bestLabel / phase / missedMate —— 全被丢掉了。
+   * 那串数字没有语义，模型只能猜哪一步是转折点，猜不准；人也读不出信息。
+   *
+   * 这份摘要做两件事：
+   *   ① 让「不配 API Key 也能复盘」成立（本地文案完全由数据生成，秒出、确定）
+   *   ② 让大模型拿到的事实是**确定的**，它只负责讲清楚「为什么」和「练什么」
+   *
+   * ⚠️ 这里只做「读数」，不做棋理推断。任何关于「该怎么走」的结论都必须来自
+   *    引擎给的 bestLabel，不能由本函数编。
+   */
+  function reviewDigest(game) {
+    var evals = (game && game.evals) || [];
+    if (!evals.length) return null;
+
+    /* 每手走的什么，直接取分析时存下来的 `playedLabel`。
+     *
+     * 原来这里是「从 startFen 重放 game.moves，边走边取 moveLabel」—— 看起来更"干净"，
+     * 但它依赖 `game.moves` 是**完整的**着法序列。实测不是：实战中它只装了红方的着法
+     * （原因见 recordMove 的注释），于是重放出来是另一盘棋，`played` 指到不相干的着法，
+     * 而输出读起来毫无破绽。**别再把「反推」当成数据来源** —— 能存就存。
+     * 旧存档没有这个字段时显示「（记谱缺失）」，不猜。 */
+    var maxPly = 0;
+    evals.forEach(function (e) { if (e.ply > maxPly) maxPly = e.ply; });
+
+    /* 回合数取两个来源的较大者：
+       · `game.moves.length` 是完整序列时更准（现在每步都记了）
+       · 旧存档里它只有红方着法，那时用「最大分析手数」兜底，最多少算半回合 */
+    var rounds = Math.max(Math.ceil((game.moves || []).length / 2), Math.ceil(maxPly / 2));
+
+    var byPhase = { opening: [], mid: [], end: [] };
+    evals.forEach(function (e) { (byPhase[e.phase] || byPhase.mid).push(e); });
+
+    var phases = ['opening', 'mid', 'end'].map(function (k) {
+      var list = byPhase[k];
+      return {
+        key: k, name: PHASE_NAME[k], moves: list.length,
+        avgLoss: list.length ? Math.round(avg(list.map(function (e) { return e.loss; }))) : null,
+        blunder: list.filter(function (e) { return e.grade === 'blunder'; }).length,
+        mistake: list.filter(function (e) { return e.grade === 'mistake'; }).length,
+        inaccuracy: list.filter(function (e) { return e.grade === 'inaccuracy'; }).length
+      };
+    });
+
+    /* 关键时刻：只看真正扣分的（严重失误 / 失误 / 漏杀），按丢分降序取前 6。
+       「不够精确」不进这个榜 —— 阈值只有 100 分，列出来会把真正的问题埋掉。 */
+    var keys = evals
+      .filter(function (e) { return e.grade === 'blunder' || e.grade === 'mistake' || e.missedMate; })
+      .sort(function (a, c) { return (c.loss || 0) - (a.loss || 0); })
+      .slice(0, 6)
+      .map(function (e) {
+        return {
+          ply: e.ply,
+          round: Math.ceil(e.ply / 2),
+          phase: PHASE_NAME[e.phase] || '中局',
+          played: e.playedLabel || '（记谱缺失）',
+          loss: e.loss,
+          grade: e.grade,
+          gradeName: GRADE_NAME[e.grade] || e.grade,
+          best: e.bestLabel || '',
+          missedMate: !!e.missedMate
+        };
+      });
+
+    var counts = {
+      moves: evals.length,
+      blunder: evals.filter(function (e) { return e.grade === 'blunder'; }).length,
+      mistake: evals.filter(function (e) { return e.grade === 'mistake'; }).length,
+      inaccuracy: evals.filter(function (e) { return e.grade === 'inaccuracy'; }).length,
+      missedMate: evals.filter(function (e) { return e.missedMate; }).length
+    };
+
+    /* 主要弱点 = 平均丢分最高、且样本够（≥3 手）的阶段。
+       样本不足就不下结论 —— 一手棋定不了「你中局弱」。 */
+    var ranked = phases
+      .filter(function (p) { return p.moves >= 3 && p.avgLoss !== null; })
+      .sort(function (a, c) { return c.avgLoss - a.avgLoss; });
+    var worst = ranked.length ? ranked[0] : null;
+
+    var d = {
+      result: game.result || 'unfinished',
+      finished: !!game.finished,
+      sceneName: game.sceneName || '',
+      /* 手数优先用完整的着法序列；旧存档里它只有红方着法，退回最大分析手数 */
+      plies: Math.max((game.moves || []).length, maxPly),
+      rounds: rounds,
+      counts: counts,
+      phases: phases,
+      keys: keys,
+      worst: worst,
+      /* 平均丢分：把每个阶段等权平均，而不是把所有手混在一起 —— 否则
+         残局手少的时候会被开局的手数稀释掉。 */
+      avgLoss: (function () {
+        var v = phases.filter(function (p) { return p.avgLoss !== null; }).map(function (p) { return p.avgLoss; });
+        return v.length ? Math.round(avg(v)) : 0;
+      })()
+    };
+    d.text = digestText(d);
+    return d;
+  }
+
+  /* 本地复盘文案 —— 不依赖大模型，也不需要网络。 */
+  function digestText(d) {
+    var L = [];
+    var res = d.result === 'win' ? '你（红方）获胜'
+      : d.result === 'loss' ? '你（红方）落败'
+        : d.result === 'draw' ? '和棋' : '对局进行中';
+    L.push('【结果】' + res + '　共 ' + d.rounds + ' 回合');
+
+    L.push('');
+    L.push('【失误分布】');
+    d.phases.forEach(function (p) {
+      if (!p.moves) return;
+      var bits = [];
+      if (p.blunder) bits.push('严重失误 ' + p.blunder);
+      if (p.mistake) bits.push('失误 ' + p.mistake);
+      if (p.inaccuracy) bits.push('不够精确 ' + p.inaccuracy);
+      L.push('  ' + p.name + '（' + p.moves + ' 手，平均丢分 ' + p.avgLoss + '）'
+        + (bits.length ? '：' + bits.join(' · ') : '：没有明显问题'));
+    });
+
+    if (d.keys.length) {
+      L.push('');
+      L.push('【关键时刻】按丢分排序');
+      d.keys.forEach(function (k) {
+        var head = '  第 ' + k.ply + ' 手（第 ' + k.round + ' 回合，' + k.phase + '）'
+          + k.played + ' —— ' + (k.missedMate ? '漏杀' : k.gradeName + '，丢 ' + k.loss + ' 分');
+        L.push(head);
+        if (k.best) L.push('      引擎认为该走：' + k.best);
+      });
+    } else {
+      L.push('');
+      L.push('【关键时刻】没有严重失误、失误或漏杀。');
+    }
+
+    if (d.counts.missedMate) {
+      L.push('');
+      L.push('【漏杀】有 ' + d.counts.missedMate + ' 手本来可以直接成杀，没有走出来。');
+    }
+
+    L.push('');
+    L.push('【结论】');
+    if (d.worst && d.worst.avgLoss > 0) {
+      L.push('  平均丢分最高的是' + d.worst.name + '（' + d.worst.avgLoss + ' 分 / 手，'
+        + d.worst.moves + ' 手）。整体平均 ' + d.avgLoss + ' 分 / 手。');
+    } else {
+      L.push('  这盘没有值得单拎出来的阶段性问题。整体平均 ' + d.avgLoss + ' 分 / 手。');
+    }
+    if (d.counts.blunder) {
+      var top = d.keys.filter(function (k) { return k.grade === 'blunder'; })[0];
+      if (top) L.push('  最大的一处是第 ' + top.ply + ' 手的 ' + top.played + '（丢 ' + top.loss + ' 分）。');
+    }
+    return L.join('\n');
+  }
+
+  /* 喂给大模型的结构化事实。与 digestText 同一份数据，
+     但排版更省 token、也去掉了「结论」段 —— 那一段是留给模型写的。 */
+  function digestLines(d) {
+    var L = [];
+    L.push('【已由本地引擎逐手算好，可直接引用，不要自行推测】');
+    L.push('我执红方，共 ' + d.rounds + ' 回合。'
+      + '严重失误 ' + d.counts.blunder + ' 次、失误 ' + d.counts.mistake
+      + ' 次、不够精确 ' + d.counts.inaccuracy + ' 次'
+      + (d.counts.missedMate ? '、漏杀 ' + d.counts.missedMate + ' 次' : '') + '。');
+    var ph = d.phases.filter(function (p) { return p.moves; })
+      .map(function (p) { return p.name + ' ' + p.moves + ' 手/平均丢 ' + p.avgLoss + ' 分'; });
+    L.push('分阶段：' + ph.join('；') + '。');
+    if (d.keys.length) {
+      L.push('按丢分排序的关键时刻（「丢分」= 引擎认为的最好走法与我实际走法之间的分差）：');
+      d.keys.forEach(function (k) {
+        L.push('  · 第 ' + k.ply + ' 手（第 ' + k.round + ' 回合，' + k.phase + '）我走了 ' + k.played
+          + '，丢 ' + k.loss + ' 分'
+          + (k.missedMate ? '（这一步本来可以直接成杀）' : '')
+          + (k.best ? '；引擎建议走 ' + k.best : '') + '。');
+      });
+    } else {
+      L.push('没有严重失误、失误或漏杀。');
+    }
+    return L;
   }
 
   /* ---------- 存取 ---------- */
@@ -346,7 +562,9 @@
           });
         }
       } else {
-        /* 杀法：优先推没通关的，按难度递增 */
+        /* 杀法：优先推没通关的，按难度递增。
+           `sort` 在现代 JS 里是**稳定**的，所以同一个 tier 内库里原有的顺序保留 ——
+           手写的 m1~m11（带 `idea` 讲解）自然排在导入的题目前面。 */
         var unsolved = XQLIB.MATES.filter(function (m) { return !s.drills.solved[m.id]; });
         var pool = unsolved.length ? unsolved : XQLIB.MATES;
         pool = pool.slice().sort(function (a, b) { return (a.tier || 1) - (b.tier || 1); });
@@ -355,7 +573,7 @@
           out.push({
             id: 'mate:' + mt.id, scene: 'mate:' + mt.id,
             badge: plan.badge, title: mt.name,
-            desc: (mt.tier === 1 ? '一步杀' : '两步杀') + ' · ' + plan.why, reason: dim
+            desc: tierText(mt) + ' · ' + plan.why, reason: dim
           });
         }
       }
@@ -382,6 +600,8 @@
     createGame: createGame,
     recordMove: recordMove,
     phaseFor: phaseFor,
+    reviewDigest: reviewDigest, digestText: digestText, digestLines: digestLines,
+    tierText: tierText,
     saveGame: saveGame, listGames: listGames, getGame: getGame,
     deleteGame: deleteGame, clearGames: clearGames,
     markDrillSolved: markDrillSolved, markDrillAttempt: markDrillAttempt,

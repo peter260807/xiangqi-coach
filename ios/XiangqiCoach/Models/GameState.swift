@@ -877,9 +877,15 @@ final class GameState: ObservableObject {
         guard !gameOver else { return }
         let snapshot = board
         let side = turn
+        /* 评估条要跟着每一手实时刷新，所以用浅搜索（depth 3）。
+           但**杀法题必须更深**：从公开题库导入的题最深到六手，depth 3 一次都看不到杀棋
+           （实测 60 个抽样里 0 个），评估条会显示「黑方明显占优」—— 而红方其实有必杀，
+           这会把学生直接带偏。组成局面子力少、加深很便宜（实测 depth 6 平均 44ms），
+           所以按场景区分。剩下的由 evalBar 的文案兜底。 */
+        let depth = (scene.kind == .mate) ? 6 : 3
         // 评估条也要知道「这盘棋已经出现过哪些局面」：优势方被逼和 / 弱势方求和，
         // 显示 0 才是实话。不给历史的话它会一直报着已经拿不到的分数。
-        Engine.shared.search(board: snapshot, side: side, maxDepth: 3, timeMs: 500,
+        Engine.shared.search(board: snapshot, side: side, maxDepth: depth, timeMs: 500,
                              history: searchHistory) { [weak self] r in
             guard let self else { return }
             self.redScore = (side == .red) ? r.score : -r.score

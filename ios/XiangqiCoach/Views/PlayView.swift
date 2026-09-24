@@ -16,6 +16,9 @@ struct PlayView: View {
     @State private var panelBusy = false
     @State private var askText = ""
     @State private var showAskField = false
+    /// 面板里正显示的那份本地复盘。非 nil 时工具栏会出现「让大模型讲讲」——
+    /// 复盘的两层是分开的：本地数据版不需要 API Key，大模型那层是可选的。
+    @State private var pendingReview: ReviewDigest?
     /// 自动化截图时可用 SIMCTL_CHILD_START_NOTATION=1 直接打开棋谱面板
     @State private var showNotation = ProcessInfo.processInfo.environment["START_NOTATION"] == "1"
 
@@ -262,12 +265,19 @@ struct PlayView: View {
     private var evalBar: some View {
         let pct = Engine.winRate(game.redScore)
         let redPct = Int((pct * 100).rounded())
+        /* 杀法题里红方常常子力大落后（古谱排局就是这样设计的），所以评估条会显示
+           对面占优 —— 而红方其实有必杀。数值不改（它是真实的子力差），
+           但标一句来源，免得被读成「这局要输」。 */
+        var evalText = (game.gameOver ? game.evalOverride : nil) ?? Engine.scoreText(game.redScore)
+        if !game.gameOver, game.scene.kind == .mate, abs(game.redScore) < Engine.mate - 1000 {
+            evalText += "（按子力）"
+        }
         return VStack(spacing: 7) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("红方").font(.system(size: 12)).foregroundStyle(Palette.ink3)
                 Text("\(redPct)%").font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.red)
                 Spacer()
-                Text((game.gameOver ? game.evalOverride : nil) ?? Engine.scoreText(game.redScore))
+                Text(evalText)
                     .font(.system(size: 12)).foregroundStyle(Palette.ink2)
                 Spacer()
                 Text("\(100 - redPct)%").font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.black)
@@ -697,6 +707,14 @@ struct PlayView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 12) {
+                        /* 「本地数据版」看完了可以再要一段大模型讲解。
+                           只在**当前显示的正是本地复盘**时出现 —— 换到教练点评 /
+                           着法建议之后它就该消失，否则会拿着一份过期的摘要去问。 */
+                        if let d = pendingReview, !panelBusy, panelTitle.contains("本地引擎") {
+                            Button {
+                                aiReview(d)
+                            } label: { Label("讲讲", systemImage: "sparkles") }
+                        }
                         if !panelBody.isEmpty && !panelBusy {
                             Button {
                                 showAskField = true
@@ -779,22 +797,47 @@ struct PlayView: View {
         }
     }
 
+    /// 复盘分两层，顺序很重要：
+    /// ① **本地复盘卡** —— 完全由已经算好的逐手数据生成（丢分 / 评价 / 引擎建议）。
+    ///    不需要 API Key、不用等网络、秒出，而且事实是确定的。
+    /// ② **大模型讲解** —— 可选。把①那份结构化事实整段喂进去，让模型只负责
+    ///    「为什么」和「练什么」，而不是让它从一串分数里猜哪一步是转折点。
+    ///
+    /// 原来两层是绑死的（点复盘先 requireConfig()），结果没配 Key 就完全用不了复盘 ——
+    /// 而复盘最有价值的那部分信息本来就在本地。
     private func review() {
-        guard !panelBusy, requireConfig() else { return }
         guard game.history.count >= 6 else {
             panelTitle = "复盘"
             panelBody = "至少走满 3 个回合再复盘比较有意义，先多下几步。"
+            pendingReview = nil
             showCoach = true
             return
         }
+        guard let record = game.currentRecord, let d = ReviewDigest.build(record) else {
+            panelTitle = "复盘"
+            panelBody = "这盘还没有逐手分析数据。\n\n"
+                + "引擎是在你每走一步之后顺手打分（深度 4），走几步再回来就有了。\n"
+                + "（打谱演示模式不做逐手分析，那种局面请用「教练点评」。）"
+            pendingReview = nil
+            showCoach = true
+            return
+        }
+        pendingReview = d
+        panelTitle = "复盘报告（本地引擎）"
+        panelBody = d.text
+        showCoach = true
+    }
+
+    /// 大模型那一层。事实由 `d.promptLines` 提供，模型只写「为什么」和「练什么」。
+    private func aiReview(_ d: ReviewDigest) {
+        guard !panelBusy, requireConfig() else { return }
         panelBusy = true
-        panelTitle = "复盘报告"
-        panelBody = "正在整理棋谱…"
+        panelTitle = "复盘报告（大模型）"
+        panelBody = "正在讲解…"
         showCoach = true
 
-        let record = game.currentRecord
         var trace: [String] = []
-        if let evals = record?.evals {
+        if let evals = game.currentRecord?.evals {
             trace = evals.map { "第\($0.ply)手 \($0.redScore)" }
         }
         let ctx = Prompts.ReviewContext(
@@ -802,7 +845,8 @@ struct PlayView: View {
                                            moves: game.history.map { $0.move }),
             result: game.gameOver ? "对局已结束" : "对局进行中",
             endBoard: game.board,
-            evalTrace: trace
+            evalTrace: trace,
+            digestLines: d.promptLines
         )
         let t0 = Date()
 

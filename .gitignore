@@ -30,6 +30,7 @@ xcuserdata/
 
 # ---------- 测试临时产物 ----------
 _probe.html
+_probe*.js
 _cors.html
 _s_*.html
 /*.png
@@ -81,3 +82,10 @@ tools/uci/build/
 # 有价值的那几批会显式归档到 tools/ab-package/results/
 tools/ab-package/ab-result-*.txt
 tools/ab-package/ab-progress-*.jsonl
+
+# ---------- 外部题库（第三方数据，可随时重新下载） ----------
+# 不给仓库增重，也让"这份数据从哪来"这件事保持显式：
+#   node tools/import-puzzles.js fetch
+# 求解结果（我们自己的产出）才进仓库，见 shared/library.json。
+# 来源与许可见 docs/puzzle-sources.md
+shared/external/
