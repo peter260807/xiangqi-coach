@@ -22,14 +22,27 @@ struct MatePuzzle: Codable, Identifiable {
     /// 难度文案。`tier` 只有 1/2 两档（手写库用的），导入的题最多到 3，
     /// 所以优先按 mateIn 说清楚。
     var difficultyText: String {
-        let n = mateIn ?? 0
-        if n >= 1 && n <= 10 {
-            let cn = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]
-            return cn[n - 1] + "步杀"
-        }
+        if let n = mateIn, let s = MatePuzzle.cnNum(n) { return s + "步杀" }
         if tier == 1 { return "一步杀" }
         if tier == 2 { return "两步杀" }
         return "多步杀"
+    }
+
+    /// 1~99 的中文数字。原来这里写死一个到「十」的数组 `cn[mateIn - 1]`，
+    /// 于是 11 手以上全部掉进 tier 兜底、显示成「多步杀」——
+    /// Pikafish 求解深杀之后库里有 30 手杀，这个洞就露出来了。
+    ///
+    /// ⚠️ 2 手**刻意**返回「二」不是「两」：原来 `cn[1]` 就是「二」，
+    /// 库里 mateIn=2 的题一直显示「二步杀」，网页端训练页的筛选徽标也用「二」。
+    /// 这次只是把上界从 10 提到 99，不该顺手改既有文案。
+    static func cnNum(_ n: Int) -> String? {
+        guard n >= 1 && n <= 99 else { return nil }
+        let d = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九"]
+        if n < 10 { return d[n] }
+        if n == 10 { return "十" }
+        if n < 20 { return "十" + d[n % 10] }
+        let head = d[n / 10] + "十"
+        return n % 10 == 0 ? head : head + d[n % 10]
     }
 }
 

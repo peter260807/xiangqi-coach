@@ -172,13 +172,27 @@
 
   var PHASE_NAME = { opening: '开局', mid: '中局', end: '残局' };
   var GRADE_NAME = { blunder: '严重失误', mistake: '失误', inaccuracy: '不够精确', ok: '正常' };
-  var CN_NUM = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+  var CN_DIGIT = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+
+  /* 1~99 的中文数字。
+     原来这里是一个写死到「十」的数组 `CN_NUM[mateIn - 1]` —— 导入公开题库之后
+     最深有 30 手杀，11 手以上全部掉进 tier 兜底、被显示成「多步杀」，
+     题面自带的手数信息就丢了。 */
+  function cnNum(n) {
+    if (!(n >= 1 && n <= 99)) return '';
+    if (n < 10) return CN_DIGIT[n];
+    if (n === 10) return '十';
+    if (n < 20) return '十' + CN_DIGIT[n % 10];
+    var head = CN_DIGIT[Math.floor(n / 10)] + '十';
+    return n % 10 ? head + CN_DIGIT[n % 10] : head;
+  }
 
   /* 难度文案。tier 1/2 是手写的 m1~m11 用的；导入的题最多到 tier 3（三步及以上）。
      原来这里写的是 `tier === 1 ? '一步杀' : '两步杀'` —— 导入之后
      三步以上的题会被显示成「两步杀」，是错的。 */
   function tierText(m) {
-    if (m && m.mateIn >= 1 && m.mateIn <= 10) return CN_NUM[m.mateIn - 1] + '步杀';
+    var n = (m && m.mateIn) || 0;
+    if (n >= 1) return cnNum(n) + '步杀';
     var t = (m && m.tier) || 1;
     return t === 1 ? '一步杀' : (t === 2 ? '两步杀' : '多步杀');
   }

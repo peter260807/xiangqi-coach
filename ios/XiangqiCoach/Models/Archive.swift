@@ -538,7 +538,7 @@ final class Archive: ObservableObject {
             var starter: [Drill] = []
             for m in library.mates.filter({ $0.tier == 1 }).prefix(2) {
                 starter.append(Drill(id: "mate:\(m.id)", sceneId: "mate:\(m.id)", badge: "杀法",
-                                     title: m.name, desc: "一步杀 · 先从这里熟悉杀棋的感觉"))
+                                     title: m.name, desc: m.difficultyText + " · 先从这里熟悉杀棋的感觉"))
             }
             if let o = library.openings.first {
                 starter.append(Drill(id: "opening:\(o.id)", sceneId: "opening:\(o.id)", badge: "开局",
@@ -584,7 +584,7 @@ final class Archive: ObservableObject {
                     if seen.contains(key) { continue }
                     seen.insert(key)
                     out.append(Drill(id: key, sceneId: key, badge: p.badge, title: m.name,
-                                     desc: (m.tier == 1 ? "一步杀" : "两步杀") + " · " + p.why))
+                                     desc: m.difficultyText + " · " + p.why))
                 }
             }
         }

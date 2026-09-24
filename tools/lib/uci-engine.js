@@ -185,6 +185,13 @@ class UciEngine {
         const src = candidates.length
           ? this.infoLines.filter((l) => num(l, 'multipv') === 1)
           : this.infoLines;
+        /* 顺便把**完整 PV** 带出来（不只是第一手）。
+         *
+         * 用途：求解杀法题时，一条 N 手杀的完整线路就在根搜索这一行里 ——
+         * 逐手重新搜索一遍要 N 次搜索（实测一条 13 手杀的题要几十秒），
+         * 而 PV 一次就给全，剩下的只是拿规则层把它走一遍验证。
+         * 取**最后一行**（最深的那次迭代）的 pv：浅迭代的 pv 是半截的。 */
+        let pv = [];
         for (const l of src) {
           depth = num(l, 'depth') || depth;
           nodes = num(l, 'nodes') || nodes;
@@ -194,8 +201,10 @@ class UciEngine {
              会把它读成 0，于是「将死」在数据里看起来和「完全均势」一模一样。 */
           const mm = l.match(/ score mate (-?\d+)/);
           if (mm) scoreMate = parseInt(mm[1], 10);
+          const pm = l.match(/ pv (.+)$/);
+          if (pm) pv = pm[1].trim().split(/\s+/);
         }
-        return { best, depth, nodes, timeMs, score, scoreMate, candidates };
+        return { best, depth, nodes, timeMs, score, scoreMate, candidates, pv };
       });
   }
 

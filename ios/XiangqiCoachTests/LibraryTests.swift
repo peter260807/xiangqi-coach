@@ -93,6 +93,38 @@ final class LibraryTests: XCTestCase {
         }
     }
 
+    /// 难度文案必须说得出**手数**，不能一律「多步杀」。
+    ///
+    /// 起因：`difficultyText` 原来是一个写死到「十」的数组 `cn[mateIn - 1]`，
+    /// 11 手以上全部掉进 tier 兜底、显示「多步杀」。用 Pikafish 求解深杀之后
+    /// 库里有 30 手杀，这个洞就露出来了（网页端 `XQSTORE.tierText` 同一处、同时修的）。
+    func testDifficultyTextReportsMoveCount() {
+        func text(_ mateIn: Int?) -> String {
+            MatePuzzle(id: "t", name: "n", tier: 3, fen: Rules.startFEN,
+                       idea: nil, set: "s", line: nil, mateIn: mateIn).difficultyText
+        }
+        XCTAssertEqual(text(1), "一步杀")
+        // ⚠️ 2 手刻意是「二」不是「两」：既有文案与网页端筛选徽标都用「二」
+        XCTAssertEqual(text(2), "二步杀")
+        XCTAssertEqual(text(10), "十步杀")
+        XCTAssertEqual(text(11), "十一步杀", "11 手原来会退化成「多步杀」")
+        XCTAssertEqual(text(20), "二十步杀", "整十不加个位")
+        XCTAssertEqual(text(28), "二十八步杀")
+        XCTAssertEqual(text(30), "三十步杀")
+
+        // 边界与退化
+        XCTAssertNil(MatePuzzle.cnNum(0), "0 手没有中文写法")
+        XCTAssertNil(MatePuzzle.cnNum(100), "超过 99 手不编造（当前库里最深 30 手）")
+        XCTAssertEqual(text(nil), "多步杀", "没有 mateIn 的老条目退回 tier 文案，不能变空串")
+
+        // 与真实库里最深的一题对一遍，确认这不是空转
+        if let deepest = lib.mates.max(by: { ($0.mateIn ?? 0) < ($1.mateIn ?? 0) }),
+           let n = deepest.mateIn {
+            XCTAssertNotEqual(deepest.difficultyText, "多步杀",
+                              "库里最深一题「\(deepest.name)」（\(n) 手）应当报出手数")
+        }
+    }
+
     func testSceneCatalogCoversWholeLibrary() {
         let scenes = SceneCatalog.all(lib)
         XCTAssertEqual(scenes.count,

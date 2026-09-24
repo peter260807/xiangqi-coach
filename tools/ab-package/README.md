@@ -115,6 +115,7 @@ run-ab.bat                一键脚本（纯 ASCII + CRLF，cmd 下不会乱码�
 ab-result-all.txt         跑完才有（perp 模式是 ab-result-perp.txt）
 ab-progress-all.jsonl     逐局日志 / 断点续跑用（perp 模式是 -perp.jsonl）
 tools/match.js            对局台
+tools/lib/coord.js        UCI 坐标 ↔ 内部索引的**唯一实现**（match.js 会 require）
 tools/lib/uci-engine.js   UCI 适配（本包用不到，但 match.js 会 require）
 web/js/engine.js          A 版引擎（剪枝默认**开**，可用环境变量关）：
                             XQ_NO_LMR=1 / XQ_NO_NULL=1   关掉 LMR / 空着裁剪

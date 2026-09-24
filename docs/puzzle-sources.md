@@ -15,7 +15,8 @@
 | 来源 | 内容量 | 格式 | 许可 | 结论 |
 |---|---|---|---|---|
 | **[xiangqi-pwa-offline](https://github.com/dffge552/xiangqi-pwa-offline)**（棋弈江湖） | 1884 个局面：基本/进阶杀法、梦入神机、适情雅趣、江湖残局、极难残局 | JSON（标准 FEN + 题名） | **MIT**（仓库 LICENSE 原文核对过） | ✅ **主用** |
-| [zizai/chinese-chess-PGN](https://gitee.com/zizai/chinese-chess-PGN)（Gitee） | 141,556 盘对局（世界象棋联合会 41,743 + 东萍象棋 99,813） | ICCS | 未声明（聚合品） | ⚠️ 量大但**权属不明**，且是原始对局、不是教学题；暂不用 |
+| [zizai/chinese-chess-PGN](https://gitee.com/zizai/chinese-chess-PGN)（Gitee） | 宣称 141,556 盘对局（世界象棋联合会 41,743 + 东萍象棋 99,813） | ICCS | 未声明（聚合品） | ❌ **判死**（见 §六，仓库里其实没有数据） |
+| [djac/chinese-chess](https://gitee.com/djac/chinese-chess)（Gitee） | 开局库：`client/res/openLib.txt` 48 KB + `openLibAll.pu` / `gambit.all.js` 各 582 KB | 走法串（`h2e2 h7e7 …`，6 手开头） | **Apache-2.0** | 🔲 **可用但未取用**：格式能直接喂我们的解析层，是候选的**开局谱**补充（当前开局库只有 8 条手写谱） |
 | [摩搭 xiangqi_train_data](https://modelscope.cn/datasets/nowcan/xiangqi_train_data) | 约 2000 万盘（SQLite + PGN） | PGN | 未声明 | ⚠️ 训练用数据，不是题目；权属不明 |
 | [lichess 开放库](https://database.lichess.org/) | 数十亿盘 | PGN/CSV/JSONL | **CC0**（最干净） | ❌ 官网变体列表里**没有中国象棋**（只有 Antichess / Atomic / Chess960 等）—— 亲测翻过页面 |
 | 古谱原典（橘中秘、梅花谱、适情雅趣、百局象棋谱、渊深海阔…） | — | 纸质/影印 | **公版**（明/清） | ✅ 着法是事实、不受版权保护；但**现代整理版的注释受版权保护**，注释要自己写 |
@@ -121,7 +122,9 @@
    不是"入门杀法训练"。想要一步杀/两步杀的入门题，**得自己出，或者从别处找**。
    —— 所以现在库里 456 道题里，最"入门"的一层仍然是手写那 11 道。
 3. **深度 13 的天花板正好卡在六手杀**（6 手 = 11 步 ≤ 13 层）。第 7 手只有 1 条，
-   是深度边界造成的截断，不是真实分布。想让手数分布继续往上，只能加深度。
+   是深度边界造成的截断，不是真实分布。
+   → **这一条当天就被推翻了**：不是"只能加深度"，而是"该换引擎"。剩下 865 条体检下来
+   有 **340 条连 Pikafish 也看不到杀**、525 条解得开 —— 见 §六。
 
 ### 落库
 
@@ -131,6 +134,18 @@
 
 体积：`shared/library.json` 9.6 KB → 224 KB；生成的 `web/js/library-data.js` 10.6 KB → 149 KB
 （紧凑 JSON，gzip 后约 50 KB）。
+
+之后又用 Pikafish 解了剩下那批（见 §六），**mates 456 → 981**：
+
+| 阶段 | mates | library.json | library-data.js（紧凑） | gzip 后 |
+|---|---|---|---|---|
+| 手写 11 道 | 11 | 9.6 KB | 10.6 KB | — |
+| + 自研引擎 d13 解出 445 | 456 | 224 KB | 149 KB | ~50 KB |
+| + Pikafish 解出 525 | **981** | **618 KB** | **408 KB** | **72 KB** |
+
+> ⚠️ **`web/js/library-data.js` 是网页首屏必须加载的文件**（不能 fetch，file:// 要能直接打开），
+> 408 KB 是它的真实代价。想瘦身的话**优先砍最深的那几十道**
+> （13 手以上共 62 道，线路 25~59 步，占了相当比例的体积，教学价值却最低）。
 
 ---
 
@@ -153,7 +168,18 @@ node tools/import-puzzles.js emit --in ...        # 去掉 --dry 才真写回
 node tools/sync-library.js                        # 重新生成 web/js/library-data.js
 node tools/check-library.js                       # 入册后再校验一遍
 node tools/test-import.js                         # 自证测试
+
+# —— 剩下那批「自研引擎看不到的」改用 Pikafish 再解一轮（§六）——
+bash tools/solve-puzzles-pika.sh 3000 6 64        # 每局面 3s / 6 片 / depth 上限 64
+node tools/solve-mates-pika.js report --in /tmp/xq-pika/shard0.jsonl,/tmp/xq-pika/shard1.jsonl,/tmp/xq-pika/shard2.jsonl,/tmp/xq-pika/shard3.jsonl,/tmp/xq-pika/shard4.jsonl,/tmp/xq-pika/shard5.jsonl
+node tools/import-puzzles.js emit --in <同上> --dry
+node tools/import-puzzles.js emit --in <同上>    # 去掉 --dry
+node tools/sync-library.js && node tools/check-library.js && node tools/test-import.js
 ```
+
+> ⚠️ 分片也要 `--random-plies` 那种「独立性」检查：`report` 会打印
+> 「分片 N 行 / 读入总数 / 通过率」，三个分片文件加起来必须等于候选池大小
+> （865）。少了就是有 worker 没跑完或写同一个文件了（见 `--shardout` 那个坑）。
 
 ### 解法是谁算的？
 
@@ -173,3 +199,91 @@ node tools/test-import.js                         # 自证测试
 
 手数从引擎的**杀棋分**读（`MATE - ply`），不是数线路长度 ——
 数长度会被浅深度人为拉长，`mateIn` 偏大、难度分档跟着全错。
+
+---
+
+## 六、Gitee 深挖 + 云库裁判 + 用 Pikafish 解「自研引擎看不到的杀」（2026-09-24 下半场）
+
+### 1. Gitee 那条线索：判死（附证据）
+
+`zizai/chinese-chess-PGN` 宣称 14 万盘对局。逐项核过：
+
+- `GET /repos/zizai/chinese-chess-PGN/git/trees/main?recursive=1` → **只有 1 个 blob**：`README.md`（2,498 字节）
+- `license: null`、`stargazers_count: 0`、`created_at == pushed_at`（单次提交）
+- README 里数据指向 **Google Drive 两个文件夹**（世界象棋联合会 41,743 盘 + 东萍象棋 99,813 盘）
+- `curl https://drive.google.com/...` → **HTTP 000 / Connection reset**（本机不可达）
+
+→ 从「量大但暂不用」升级为**判死**：不是权属问题，是**仓库里根本没有数据**。
+
+**顺手找到真正能用的那条**：`djac/chinese-chess`（Gitee，**Apache-2.0**，53 star / 21 fork）
+
+- `client/res/openLib.txt`（48,950 字节）—— 开局库
+- `openLibAll.pu` / `gambit.all.js`（各 582,266 字节）—— 含 6 手开头的变例库
+- 格式是 `h2e2 h7e7 …` 这种 **UCI 走格串**，`tools/lib/coord.js` 的 `uciToMove` 直接能解析
+
+→ 是**开局谱**的补充候选（当前开局库只有 8 条手写谱）。**尚未取用。**
+
+### 2. 中国象棋云库（chessdb.cn）—— 可当权威裁判
+
+- ⚠️ 端点是 **`chessdb.php`**，**不是**国际象棋的 `cdb.php` —— 用错会一直返回 `invalid board`
+- `https://www.chessdb.cn/chessdb.php?action=queryall&board=<标准FEN>&egtbmetric=dtm`
+  → `move:h2h4,score:29976,depth:24,...`；`action=querypv` 给主变
+- **距离单位是「步」**：`30000 − |eval|` = 步数，与我们的线路长度 `2N−1` 完全对齐
+  （mateIn=1→1 步、2→3 步、4→7 步，逐条验过）
+- 覆盖 DTM/DTC 残局库（8,705 个局面、9.85 TB）→ **只对子力很少的残局有效**，不能当全库裁判
+
+用途：把 Pikafish 解出的线路逐手问云库，攻方每步 ~29976、终点 `checkmate`
+→ 独立于 Pikafish 的第二意见。
+
+### 3. 那 865 条「未通过」：改用 Pikafish 解
+
+`node tools/solve-mates-pika.js`（分片跑：`bash tools/solve-puzzles-pika.sh`）
+
+| | 自研引擎 d13 | Pikafish 3s |
+|---|---|---|
+| 同一批候选的通过率 | **34%** | **60.7%（525/865）** |
+
+- **手数：最短 3 手、中位 9 手、最深 30 手**（分布 3:1 6:18 7:107 8:80 9:71 10:51
+  11:39 12:28 13:25 14:22 15:17 16:17 17:6 18:4 19:8 20:2 21:6 22:7 23:3 24:1 25:2 26:5 27:2 28:2 30:1）
+- 按来源：进阶杀法 76%、基本杀法 64%、梦入神机 54%、适情雅趣 52%
+- 求解路径：**全部 525 条都走「根搜索的 PV 一次到底」**（1 次搜索 + 纯规则层重放，中位 **2.8 秒/题**），
+  没有一条需要逐手重搜 —— 逐手重搜那条路（每条 N+1 次完整搜索，几十秒/题）只在 PV 被截断时才用
+- 未通过的 340 条**体检**（`report` 模式）：
+  `win 161`（必胜但 3 秒内也未见杀 → 是残局技巧题，该进 `studies` 不是 `mates`）、
+  `flat 155`（接近均势 → 源题库里的坏数据/和棋题）、
+  `lost 22`（红方反而落后 → 题目本身有问题）、`mate-unverified 2`（报了杀但线路没验过）
+  → **「未通过」不等于坏数据**，报告必须把这个区分说清楚
+
+**四条判据原样保留，只换「谁来算」**：走子方每步看得到杀棋分 / 对手每步是引擎首选 /
+终局用**我们自己的规则层**判无合法着法 / 线路长度 === `2×mateIn−1`。
+
+**落库前再过一次规则层自证**：525 条新线路全部走一遍 `XQ.adjudicate`，
+**0 条**被判成长将判负 / 三次重复 / 无吃子和棋。
+
+### 4. 「海底捞月」那条矛盾（未查清，留档）
+
+- 云库 `querypv` → **12 手**（`score:29976, depth:24, pv:h2h4`）
+- Pikafish 在 **3s / 10s / 30s 下都**报 `score mate 22`（43 步），30 秒后节点数不再增长
+  （7,767,281），`d64` 树已耗尽仍是 22 手
+
+两边**各自自洽**（云库 eval 递增、Pikafish 树耗尽）。已排除「云库那条 12 手线是长将线」
+（12 步里只有 2 步将军）。**没查清谁对。**
+→ 猜测方向：某一侧把 FEN 方言读成了另一盘棋。留档待查。
+
+### 5. ⚠️ 一个没做完的洞：iOS bundle 里的库是旧的
+
+`ios/XiangqiCoach/Resources/library.json`（XcodeGen 把 `ios/XiangqiCoach` 整目录收作源）
+**停留在导入之前的状态 —— mates 只有 11 道**（9,612 字节）；
+而 `tools/sync-library.js` 只生成 `web/js/library-data.js`，**不碰 iOS 那一份**。
+→ **iOS 端从没见过那 445 道，更别说新的 525 道。**
+
+实测（把完整库塞进 bundle 再跑单测）：
+`LibraryTests.testEveryMatePuzzleIsPlayableAndActuallyWins` 立刻大面积失败，例如
+`第260局 金创满身：引擎在 6 层内没找到成杀（实际评估 183）`。
+
+原因：它断言「每道题自研引擎在 **6 层**内都能看到杀」，而这**只对 `mateIn ≤ 2` 成立**
+（库里 93 道 mateIn ≤ 3、329 道 ≤ 5、最深 30 手）。
+→ **这条断言一直只是靠「bundle 里恰好只有 11 道浅题」才绿的。**
+
+**要同步 iOS，得先把它改成项目自己在网页端已经用过的口径**：
+沿库里的解法路线走一遍判（纯规则层，不依赖引擎深度），引擎断言只对浅题抽样。

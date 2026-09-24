@@ -261,6 +261,36 @@ console.log('\n[15] 自证（三）：比对本身有分辨力');
   check(wrong.played !== k.played, '故意写错的记谱确实与正确值不同');
 }
 
+console.log('\n[16] 难度文案：导入的深杀题必须说得出自己是多少手');
+{
+  /* 起因：`tierText` 原来写死成 `CN_NUM[mateIn - 1]`（数组只到「十」），
+     于是 11 手以上全部掉进 tier 兜底、显示成「多步杀」。
+     Pikafish 求解之后库里有 30 手杀，这个洞就露出来了。 */
+  /* ⚠️ 2 手这里刻意是「二」不是「两」：原来 `CN_NUM[1]` 就是「二」，
+     库里 21 道 mateIn=2 的题一直显示「二步杀」，训练页的筛选徽标也用「二」。
+     这次只是把上界从 10 提到 99，不该顺手改掉既有文案（那是另一件事）。
+     更深的 12 手因此是「十二步杀」而不是「十一步杀」那种混合写法，全篇一致。 */
+  eq(XQSTORE.tierText({ mateIn: 1, tier: 1 }), '一步杀', '1 手');
+  eq(XQSTORE.tierText({ mateIn: 2, tier: 2 }), '二步杀', '2 手（与既有文案一致）');
+  eq(XQSTORE.tierText({ mateIn: 10, tier: 3 }), '十步杀', '10 手（原来是这个数组的边界）');
+  eq(XQSTORE.tierText({ mateIn: 11, tier: 3 }), '十一步杀', '11 手（原来会退化成「多步杀」）');
+  eq(XQSTORE.tierText({ mateIn: 20, tier: 3 }), '二十步杀', '20 手（整十，不加个位）');
+  eq(XQSTORE.tierText({ mateIn: 28, tier: 3 }), '二十八步杀', '28 手');
+  eq(XQSTORE.tierText({ mateIn: 30, tier: 3 }), '三十步杀', '30 手（当前库里的最深一题）');
+  /* 没有 mateIn 的老条目仍按 tier 说话，不能变成空字符串 */
+  eq(XQSTORE.tierText({ tier: 1 }), '一步杀', '缺 mateIn 时退回 tier 1');
+  eq(XQSTORE.tierText({ tier: 3 }), '多步杀', '缺 mateIn 时退回 tier 3');
+  /* 与真实库对一遍：凡是带 mateIn 的题，文案必须真的是「<中文数字>步杀」——
+     不允许有题悄悄退回 tier 兜底的「多步杀」（那就是手数信息丢了）。 */
+  const lib = require(path.join(ROOT, 'shared/library.json'));
+  const mislabeled = lib.mates.filter((m) => m.mateIn >= 1 && !/^[一二三四五六七八九十]+步杀$/.test(XQSTORE.tierText(m)));
+  eq(mislabeled.length, 0, '库里 ' + lib.mates.length + ' 道题都能报出手数（没有退回「多步杀」的）');
+  /* 再抽一道真实的最深题，确认文案不是空转 */
+  const deepest = lib.mates.reduce((a, b) => ((b.mateIn || 0) > (a.mateIn || 0) ? b : a));
+  check(XQSTORE.tierText(deepest) !== '多步杀',
+    '库里最深一题（' + deepest.name + '，' + deepest.mateIn + ' 手）文案为「' + XQSTORE.tierText(deepest) + '」');
+}
+
 console.log('\n──────────────────────────────');
 console.log('通过 ' + pass + ' 项，失败 ' + fail + ' 项');
 process.exitCode = fail ? 1 : 0;

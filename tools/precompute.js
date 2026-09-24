@@ -78,23 +78,21 @@ function parseArgs(argv) {
 
 const XQ = require(JS_ENGINE);
 
-const sqName = (i) => String.fromCharCode(97 + (i % 9)) + (9 - Math.floor(i / 9));
-const toUci = (m) => sqName(m[0]) + sqName(m[1]);
-function fromUci(s) {
-  const c = (t) => (9 - parseInt(t[1], 10)) * 9 + (t.charCodeAt(0) - 97);
-  return [c(s.slice(0, 2)), c(s.slice(2, 4))];
-}
+/* 坐标与 FEN 方言的转换：**单一实现在 tools/lib/coord.js**，别在这里再写一份。
+ * 原来这个文件里有一套 `sqName/toUci/fromUci/toStdFen`，`tools/match.js` 里有另一套
+ * （`idxToUci/uciToIdx`）—— 两套逻辑相同但名字不同，改了一处不会想到另一处，
+ * 而这份转换**方向写反不会报错**，只会让引擎去算另一盘棋。
+ * 别名保留旧名字，纯粹是为了让下面的调用点不用动。 */
+const {
+  idxToUci: sqName, moveToUci: toUci, uciToMove: fromUci, toStdFen,
+} = require('./lib/coord.js');
+
 const boardKey = (b, side) => b + ' ' + side;
 
-/* 本项目内部用 `.` 表示空格，**Pikafish 不认** —— 它会报
+/* ⚠️ 为什么必须要 toStdFen：本项目内部用 `.` 表示空格，**Pikafish 不认** —— 它会报
  * `CRITICAL ERROR: Invalid FEN. Invalid piece: .` 然后**直接退出进程**，
  * 而调用方只会以为搜索还没结束，一直等下去（实测把整个任务拖到被系统杀掉）。
  * 标准 FEN 用数字表示连续空格，走子方是 w/b。行序两边一致（第 0 行都是黑方底线）。 */
-function toStdFen(fen) {
-  const parts = fen.split(' ');
-  const rows = parts[0].split('/').map((row) => row.replace(/\.+/g, (m) => String(m.length)));
-  return rows.join('/') + ' ' + (parts[1] === 'b' ? 'b' : 'w');
-}
 
 /* 杀棋分数：Pikafish 发 `score mate N` 而不是 `score cp N`。不折算的话
  * 「将死」会被读成 0 分，和「完全均势」无法区分。 */

@@ -88,12 +88,10 @@ const XQLIB = require(path.join(ROOT, 'web/js/library.js'));
 
 /* ---------- 坐标：UCI 的 a0-i9 ↔ 内部索引 r*9+c ---------- */
 
-function idxToUci(i) {
-  return String.fromCharCode(97 + (i % 9)) + (9 - Math.floor(i / 9));
-}
-function uciToIdx(s) {
-  return (9 - parseInt(s.slice(1), 10)) * 9 + (s.charCodeAt(0) - 97);
-}
+/* 单一实现在 tools/lib/coord.js —— **别在这里再写一份**。
+ * 这份转换方向写反时不会报错，只会让对局双方各算一盘棋，
+ * 而台子照样输出一个像模像样的 Elo。 */
+const { idxToUci, uciToIdx } = require('./lib/coord.js');
 
 /* ---------- 引擎适配层 ---------- */
 
