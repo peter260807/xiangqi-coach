@@ -1,0 +1,58 @@
+  逐局落盘：tools/level-match/results/lvl-hard-vs-expert.jsonl（中断后重跑本脚本即可续上）
+========================================================================
+对局台：A vs B
+========================================================================
+  A：js:tools/level-match/build/lv-hard.js   每手 300ms
+  B：js:tools/level-match/build/lv-expert.js   每手 300ms
+  共 16 局｜开局 8 组（各取前 8 手） + 之后各走 4 手随机着法｜轮流执先｜手数上限 200
+  置换表：跨局保留（引擎本来的行为；要逐位可复现就加 --clear-tt）
+
+  并行 8 路，本机逻辑核 10
+  注意：--jobs 8 用到了超线程（物理核约 5）。每个 worker 峰值占 1 核，想完全不互相打扰就用 --jobs 5。
+  并行 8 路。（每个 worker 一行「就绪」；下面的日志按局号顺序打印，局号在前的先出现）
+
+  worker 0 就绪：A=JS 引擎（tools/level-match/build/lv-hard.js）　B=JS 引擎（tools/level-match/build/lv-expert.js）
+  worker 4 就绪：A=JS 引擎（tools/level-match/build/lv-hard.js）　B=JS 引擎（tools/level-match/build/lv-expert.js）
+  worker 1 就绪：A=JS 引擎（tools/level-match/build/lv-hard.js）　B=JS 引擎（tools/level-match/build/lv-expert.js）
+  worker 7 就绪：A=JS 引擎（tools/level-match/build/lv-hard.js）　B=JS 引擎（tools/level-match/build/lv-expert.js）
+  worker 3 就绪：A=JS 引擎（tools/level-match/build/lv-hard.js）　B=JS 引擎（tools/level-match/build/lv-expert.js）
+  worker 5 就绪：A=JS 引擎（tools/level-match/build/lv-hard.js）　B=JS 引擎（tools/level-match/build/lv-expert.js）
+  worker 2 就绪：A=JS 引擎（tools/level-match/build/lv-hard.js）　B=JS 引擎（tools/level-match/build/lv-expert.js）
+  worker 6 就绪：A=JS 引擎（tools/level-match/build/lv-hard.js）　B=JS 引擎（tools/level-match/build/lv-expert.js）
+  [w0] 第  1 局（A 执红）：和棋　达到手数上限 200　200 手　层数 A 5.0 / B 7.7　116.0s
+  [w4] 第  2 局（A 执黑）：B 胜　将死　91 手　层数 A 5.0 / B 7.0　109.6s
+  [w1] 第  3 局（A 执红）：B 胜　困毙（无子可动）　142 手　层数 A 5.0 / B 7.5　127.0s
+  [w7] 第  4 局（A 执黑）：B 胜　将死　115 手　层数 A 5.0 / B 7.5　113.7s
+  [w3] 第  5 局（A 执红）：和棋　达到手数上限 200　200 手　层数 A 5.0 / B 7.7　165.9s
+  [w5] 第  6 局（A 执黑）：B 胜　将死　131 手　层数 A 5.0 / B 7.4　148.3s
+  [w2] 第  7 局（A 执红）：和棋　达到手数上限 200　200 手　层数 A 5.0 / B 7.9　114.9s
+  [w6] 第  8 局（A 执黑）：B 胜　将死　57 手　层数 A 4.7 / B 7.1　32.9s
+  [w6] 第  9 局（A 执红）：B 胜　将死　112 手　层数 A 5.0 / B 7.1　140.2s
+  [w4] 第 10 局（A 执黑）：B 胜　将死　109 手　层数 A 5.0 / B 6.8　143.0s
+  [w7] 第 11 局（A 执红）：B 胜　将死　90 手　层数 A 5.0 / B 6.7　135.3s
+  [w2] 第 12 局（A 执黑）：B 胜　将死　77 手　层数 A 4.9 / B 6.4　124.7s
+  [w0] 第 13 局（A 执红）：B 胜　将死　134 手　层数 A 5.0 / B 7.8　64.9s
+  [w1] 第 14 局（A 执黑）：和棋　达到手数上限 200　200 手　层数 A 5.0 / B 7.8　109.7s
+  [w5] 第 15 局（A 执红）：和棋　达到手数上限 200　200 手　层数 A 5.0 / B 8.0　68.3s
+  [w3] 第 16 局（A 执黑）：B 胜　将死　91 手　层数 A 4.9 / B 7.5　87.9s
+  并行完成：8 个 worker，各跑 2 / 2 / 2 / 2 / 2 / 2 / 2 / 2 局（合计 16）
+
+========================================================================
+结果
+========================================================================
+  A 0 胜 / 5 和 / 11 负　（共 16 局）
+  A 的得分率：15.6%
+  平均层数：A 4.97 / B 7.51
+  独立起手局面：8 组 / 16 局（成对设计，期望 8 组）
+  Elo 差（A - B）：-293　95% 置信区间 [-448, -138]
+  → 区间不含 0：差别是**真的**，方向为 B 更强
+
+  结束原因分布：
+     10 局　将死
+      5 局　达到手数上限 200
+      1 局　困毙（无子可动）
+
+  纯对局耗时 1802s（总耗时 254s）
+  提示：本批次只有 16 局，能分辨的差距约 ±120 Elo。
+        要判定「小改进」得把局数加上去（N 局的分辨力大致按 1/√N 变好）。
+

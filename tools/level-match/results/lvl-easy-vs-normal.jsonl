@@ -1,0 +1,17 @@
+{"_header":1,"msA":300,"msB":300,"openings":8,"openPlies":8,"randomPlies":4,"seed":1,"maxPly":200,"a":"js:tools/level-match/build/lv-easy.js","b":"js:tools/level-match/build/lv-normal.js","fpA":"70eaf1db81f3f6ea","fpB":"d2176161dd28ea38","clearTt":0,"games":16}
+{"g":1,"aIsRed":true,"result":"b","reason":"将死","ply":44,"prefix":"h2e2 b9c7 h0g2 h7f7 i0h0 h9g7 c0a2 a9a8 g2i1 i6i5","dA":17,"nA":17,"dB":50,"nB":17,"broken":false}
+{"g":2,"aIsRed":false,"result":"d","reason":"达到手数上限 200","ply":200,"prefix":"h2e2 b9c7 h0g2 h7f7 i0h0 h9g7 c0a2 a9a8 g2i1 i6i5","dA":95,"nA":95,"dB":285,"nB":95,"broken":false}
+{"g":3,"aIsRed":true,"result":"d","reason":"三次重复局面（双方均非长将）","ply":167,"prefix":"c3c4 b7c7 b0c2 h9g7 b2a2 h7h6 g0e2 c9a7","dA":80,"nA":80,"dB":237,"nB":79,"broken":false}
+{"g":4,"aIsRed":false,"result":"b","reason":"将死","ply":63,"prefix":"c3c4 b7c7 b0c2 h9g7 b2a2 h7h6 g0e2 c9a7","dA":27,"nA":27,"dB":83,"nB":28,"broken":false}
+{"g":5,"aIsRed":true,"result":"b","reason":"将死","ply":74,"prefix":"g0e2 h7d7 b0c2 h9g7 h2h6 i9i7 h6h1 a9a8","dA":33,"nA":33,"dB":98,"nB":33,"broken":false}
+{"g":6,"aIsRed":false,"result":"d","reason":"60 回合无吃子","ply":190,"prefix":"g0e2 h7d7 b0c2 h9g7 h2h6 i9i7 h6h1 a9a8","dA":91,"nA":91,"dB":273,"nB":91,"broken":false}
+{"g":7,"aIsRed":true,"result":"b","reason":"将死","ply":132,"prefix":"b0c2 g6g5 h2e2 h9g7 e2e6 i9i7 c2e1 g7h9","dA":62,"nA":62,"dB":185,"nB":62,"broken":false}
+{"g":8,"aIsRed":false,"result":"b","reason":"将死","ply":111,"prefix":"b0c2 g6g5 h2e2 h9g7 e2e6 i9i7 c2e1 g7h9","dA":51,"nA":51,"dB":155,"nB":52,"broken":false}
+{"g":9,"aIsRed":true,"result":"b","reason":"将死","ply":138,"prefix":"h2d2 h9g7 h0g2 i9h9 d2c2 b7b5 b2b3 h7h2","dA":65,"nA":65,"dB":194,"nB":65,"broken":false}
+{"g":10,"aIsRed":false,"result":"b","reason":"将死","ply":71,"prefix":"h2d2 h9g7 h0g2 i9h9 d2c2 b7b5 b2b3 h7h2","dA":31,"nA":31,"dB":95,"nB":32,"broken":false}
+{"g":11,"aIsRed":true,"result":"b","reason":"困毙（无子可动）","ply":74,"prefix":"h2e2 b9c7 h0g2 i9i8 c0a2 g9i7 g2h0 h7h4","dA":33,"nA":33,"dB":98,"nB":33,"broken":false}
+{"g":12,"aIsRed":false,"result":"b","reason":"将死","ply":137,"prefix":"h2e2 b9c7 h0g2 i9i8 c0a2 g9i7 g2h0 h7h4","dA":64,"nA":64,"dB":194,"nB":65,"broken":false}
+{"g":13,"aIsRed":true,"result":"a","reason":"将死","ply":107,"prefix":"h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 b2c2 g6g5 c0a2 b7b1 e0e1 e9e8","dA":48,"nA":48,"dB":141,"nB":47,"broken":false}
+{"g":14,"aIsRed":false,"result":"b","reason":"将死","ply":51,"prefix":"h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 b2c2 g6g5 c0a2 b7b1 e0e1 e9e8","dA":19,"nA":19,"dB":59,"nB":20,"broken":false}
+{"g":15,"aIsRed":true,"result":"b","reason":"将死","ply":134,"prefix":"h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 g3g4 c6c5 h0h7 i6i5 h7h4 c7d5","dA":61,"nA":61,"dB":182,"nB":61,"broken":false}
+{"g":16,"aIsRed":false,"result":"b","reason":"将死","ply":43,"prefix":"h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 g3g4 c6c5 h0h7 i6i5 h7h4 c7d5","dA":15,"nA":15,"dB":47,"nB":16,"broken":false}

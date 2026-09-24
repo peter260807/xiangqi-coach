@@ -1,0 +1,17 @@
+{"_header":1,"msA":300,"msB":300,"openings":8,"openPlies":8,"randomPlies":4,"seed":1,"maxPly":200,"a":"js:tools/level-match/build/lv-expert.js","b":"js:tools/level-match/build/lv-master.js","fpA":"8e52350fc1acb468","fpB":"cb84c022eabef8e7","clearTt":0,"games":16}
+{"g":1,"aIsRed":true,"result":"a","reason":"将死","ply":95,"prefix":"h2e2 b9c7 h0g2 h7f7 i0h0 h9g7 c0a2 a9a8 g2i1 i6i5","dA":295,"nA":43,"dB":327,"nB":42,"broken":false}
+{"g":2,"aIsRed":false,"result":"b","reason":"将死","ply":149,"prefix":"h2e2 b9c7 h0g2 h7f7 i0h0 h9g7 c0a2 a9a8 g2i1 i6i5","dA":525,"nA":69,"dB":582,"nB":70,"broken":false}
+{"g":3,"aIsRed":true,"result":"b","reason":"将死","ply":94,"prefix":"c3c4 b7c7 b0c2 h9g7 b2a2 h7h6 g0e2 c9a7","dA":311,"nA":43,"dB":332,"nB":43,"broken":false}
+{"g":4,"aIsRed":false,"result":"d","reason":"三次重复局面（双方均非长将）","ply":111,"prefix":"c3c4 b7c7 b0c2 h9g7 b2a2 h7h6 g0e2 c9a7","dA":380,"nA":51,"dB":441,"nB":52,"broken":false}
+{"g":5,"aIsRed":true,"result":"a","reason":"将死","ply":83,"prefix":"g0e2 h7d7 b0c2 h9g7 h2h6 i9i7 h6h1 a9a8","dA":261,"nA":38,"dB":274,"nB":37,"broken":false}
+{"g":6,"aIsRed":false,"result":"a","reason":"将死","ply":46,"prefix":"g0e2 h7d7 b0c2 h9g7 h2h6 i9i7 h6h1 a9a8","dA":121,"nA":19,"dB":141,"nB":19,"broken":false}
+{"g":7,"aIsRed":true,"result":"b","reason":"将死","ply":34,"prefix":"b0c2 g6g5 h2e2 h9g7 e2e6 i9i7 c2e1 g7h9","dA":96,"nA":13,"dB":101,"nB":13,"broken":false}
+{"g":8,"aIsRed":false,"result":"b","reason":"将死","ply":61,"prefix":"b0c2 g6g5 h2e2 h9g7 e2e6 i9i7 c2e1 g7h9","dA":197,"nA":26,"dB":203,"nB":27,"broken":false}
+{"g":9,"aIsRed":true,"result":"b","reason":"将死","ply":70,"prefix":"h2d2 h9g7 h0g2 i9h9 d2c2 b7b5 b2b3 h7h2","dA":211,"nA":31,"dB":213,"nB":31,"broken":false}
+{"g":10,"aIsRed":false,"result":"d","reason":"达到手数上限 200","ply":200,"prefix":"h2d2 h9g7 h0g2 i9h9 d2c2 b7b5 b2b3 h7h2","dA":715,"nA":96,"dB":920,"nB":96,"broken":false}
+{"g":11,"aIsRed":true,"result":"b","reason":"将死","ply":86,"prefix":"h2e2 b9c7 h0g2 i9i8 c0a2 g9i7 g2h0 h7h4","dA":279,"nA":39,"dB":317,"nB":39,"broken":false}
+{"g":12,"aIsRed":false,"result":"d","reason":"三次重复局面（双方均非长将）","ply":142,"prefix":"h2e2 b9c7 h0g2 i9i8 c0a2 g9i7 g2h0 h7h4","dA":501,"nA":67,"dB":640,"nB":67,"broken":false}
+{"g":13,"aIsRed":true,"result":"b","reason":"将死","ply":56,"prefix":"h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 b2c2 g6g5 c0a2 b7b1 e0e1 e9e8","dA":152,"nA":22,"dB":150,"nB":22,"broken":false}
+{"g":14,"aIsRed":false,"result":"b","reason":"将死","ply":77,"prefix":"h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 b2c2 g6g5 c0a2 b7b1 e0e1 e9e8","dA":218,"nA":32,"dB":233,"nB":33,"broken":false}
+{"g":15,"aIsRed":true,"result":"d","reason":"三次重复局面（双方均非长将）","ply":52,"prefix":"h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 g3g4 c6c5 h0h7 i6i5 h7h4 c7d5","dA":158,"nA":20,"dB":176,"nB":20,"broken":false}
+{"g":16,"aIsRed":false,"result":"d","reason":"达到手数上限 200","ply":200,"prefix":"h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 g3g4 c6c5 h0h7 i6i5 h7h4 c7d5","dA":739,"nA":94,"dB":871,"nB":94,"broken":false}

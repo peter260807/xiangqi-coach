@@ -1,0 +1,17 @@
+{"_header":1,"msA":300,"msB":300,"openings":8,"openPlies":8,"randomPlies":4,"seed":1,"maxPly":200,"a":"js:tools/level-match/build/lv-hard.js","b":"js:tools/level-match/build/lv-expert.js","fpA":"41b63fca460493ab","fpB":"8e52350fc1acb468","clearTt":0,"games":16}
+{"g":1,"aIsRed":true,"result":"d","reason":"达到手数上限 200","ply":200,"prefix":"h2e2 b9c7 h0g2 h7f7 i0h0 h9g7 c0a2 a9a8 g2i1 i6i5","dA":475,"nA":95,"dB":731,"nB":95,"broken":false}
+{"g":2,"aIsRed":false,"result":"b","reason":"将死","ply":91,"prefix":"h2e2 b9c7 h0g2 h7f7 i0h0 h9g7 c0a2 a9a8 g2i1 i6i5","dA":198,"nA":40,"dB":289,"nB":41,"broken":false}
+{"g":3,"aIsRed":true,"result":"b","reason":"困毙（无子可动）","ply":142,"prefix":"c3c4 b7c7 b0c2 h9g7 b2a2 h7h6 g0e2 c9a7","dA":333,"nA":67,"dB":505,"nB":67,"broken":false}
+{"g":4,"aIsRed":false,"result":"b","reason":"将死","ply":115,"prefix":"c3c4 b7c7 b0c2 h9g7 b2a2 h7h6 g0e2 c9a7","dA":263,"nA":53,"dB":403,"nB":54,"broken":false}
+{"g":5,"aIsRed":true,"result":"d","reason":"达到手数上限 200","ply":200,"prefix":"g0e2 h7d7 b0c2 h9g7 h2h6 i9i7 h6h1 a9a8","dA":480,"nA":96,"dB":743,"nB":96,"broken":false}
+{"g":6,"aIsRed":false,"result":"b","reason":"将死","ply":131,"prefix":"g0e2 h7d7 b0c2 h9g7 h2h6 i9i7 h6h1 a9a8","dA":303,"nA":61,"dB":458,"nB":62,"broken":false}
+{"g":7,"aIsRed":true,"result":"d","reason":"达到手数上限 200","ply":200,"prefix":"b0c2 g6g5 h2e2 h9g7 e2e6 i9i7 c2e1 g7h9","dA":480,"nA":96,"dB":763,"nB":96,"broken":false}
+{"g":8,"aIsRed":false,"result":"b","reason":"将死","ply":57,"prefix":"b0c2 g6g5 h2e2 h9g7 e2e6 i9i7 c2e1 g7h9","dA":112,"nA":24,"dB":177,"nB":25,"broken":false}
+{"g":9,"aIsRed":true,"result":"b","reason":"将死","ply":112,"prefix":"h2d2 h9g7 h0g2 i9h9 d2c2 b7b5 b2b3 h7h2","dA":258,"nA":52,"dB":369,"nB":52,"broken":false}
+{"g":10,"aIsRed":false,"result":"b","reason":"将死","ply":109,"prefix":"h2d2 h9g7 h0g2 i9h9 d2c2 b7b5 b2b3 h7h2","dA":248,"nA":50,"dB":347,"nB":51,"broken":false}
+{"g":11,"aIsRed":true,"result":"b","reason":"将死","ply":90,"prefix":"h2e2 b9c7 h0g2 i9i8 c0a2 g9i7 g2h0 h7h4","dA":203,"nA":41,"dB":274,"nB":41,"broken":false}
+{"g":12,"aIsRed":false,"result":"b","reason":"将死","ply":77,"prefix":"h2e2 b9c7 h0g2 i9i8 c0a2 g9i7 g2h0 h7h4","dA":168,"nA":34,"dB":224,"nB":35,"broken":false}
+{"g":13,"aIsRed":true,"result":"b","reason":"将死","ply":134,"prefix":"h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 b2c2 g6g5 c0a2 b7b1 e0e1 e9e8","dA":303,"nA":61,"dB":475,"nB":61,"broken":false}
+{"g":14,"aIsRed":false,"result":"d","reason":"达到手数上限 200","ply":200,"prefix":"h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 b2c2 g6g5 c0a2 b7b1 e0e1 e9e8","dA":470,"nA":94,"dB":733,"nB":94,"broken":false}
+{"g":15,"aIsRed":true,"result":"d","reason":"达到手数上限 200","ply":200,"prefix":"h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 g3g4 c6c5 h0h7 i6i5 h7h4 c7d5","dA":470,"nA":94,"dB":749,"nB":94,"broken":false}
+{"g":16,"aIsRed":false,"result":"b","reason":"将死","ply":91,"prefix":"h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 g3g4 c6c5 h0h7 i6i5 h7h4 c7d5","dA":193,"nA":39,"dB":302,"nB":40,"broken":false}
