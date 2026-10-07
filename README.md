@@ -3,7 +3,7 @@
 一个面向**初学者**的中国象棋学习应用：本地引擎陪练、杀法残局训练、胜率与提示、
 接入大模型做局面点评与复盘，并且会**根据你的对局数据总结强弱项、给出针对性训练**。
 
-同一套引擎逻辑有两个前端：
+同一套引擎逻辑有三个前端：
 
 | 前端 | 说明 |
 |---|---|
@@ -319,7 +319,7 @@ node tools/test-rep-search.js # 搜索层的「和棋意识」（35 项断言）
 node tools/test-review.js     # 复盘摘要：字段、排序、文案、提示词接线（55 项，含篡改自证）
 node tools/test-import.js     # 题库导入：FEN 转换、去重键、杀棋手数（21 项，含反向自证）
 node tools/test-ai.js         # 大模型联通性（会真实调用接口）
-node tools/sync-library.js    # 改完棋谱库后同步到两端（网页 + iOS bundle）
+node tools/sync-library.js    # 改完棋谱库后同步到三端（网页 + iOS bundle + Android assets）
 node tools/gen-lines.js       # 用引擎重算各杀局的解法路线
 node tools/add-classics.js    # 录入并校验古谱名局
 node tools/check-library.js   # 局面合法性（子力上限、士象位置、兵卒方向、飞将、被将军）
@@ -642,7 +642,7 @@ node tools/pk-match.js --pika /path/to/pikafish --nnue /path/to/pikafish.nnue \
   （数据量 / 网络容量 / 训练目标 / 特征编码四条全被实测否掉），剩下的杠杆在搜索。
   两句话为什么不冲突，见 `docs/strength-plan.md` 第 2.1 节
 - **对局层已判和 / 判长将**（2026-09-22 起）：长将判负、双方长将判和、三次重复判和、
-  60 回合无吃子判和，iOS / 网页 / 对局台共用同一份判据（`XQ.adjudicate` / `Rules.adjudicate`）。
+  60 回合无吃子判和，iOS / 网页 / Android / 对局台共用同一份判据（`XQ.adjudicate` / `Rules.adjudicate`）。
   ⚠️ **长捉刻意没做** —— 区分捉/兑/献/拦/跟要判「吃了是否得子」外加一串例外，
   做错的代价是「明明和棋却判人输」，比不做更糟（理由见 `docs/strength-plan.md` 的 P2-1）。
 - **搜索层现在也认得循环了**（2026-09-22 起）：搜索带上走到当前局面为止的着法历史，

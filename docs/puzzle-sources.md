@@ -165,7 +165,7 @@ wait
 
 node tools/import-puzzles.js emit --in /tmp/s0.jsonl,/tmp/s1.jsonl,/tmp/s2.jsonl,/tmp/s3.jsonl,/tmp/s4.jsonl,/tmp/s5.jsonl --dry
 node tools/import-puzzles.js emit --in ...        # 去掉 --dry 才真写回
-node tools/sync-library.js                        # 重新生成网页端与 iOS bundle 两份棋谱库
+node tools/sync-library.js                        # 重新生成三份棋谱库（网页 / iOS bundle / Android assets）
 node tools/check-library.js                       # 入册后再校验一遍
 node tools/test-import.js                         # 自证测试
 
@@ -286,9 +286,10 @@ node tools/sync-library.js && node tools/check-library.js && node tools/test-imp
 
 | 改动 | 内容 |
 |---|---|
-| 同步链 | `tools/sync-library.js` 现在**同时**生成 `web/js/library-data.js` 与 `ios/XiangqiCoach/Resources/library.json`（都是紧凑格式，各约 399 KB）。iOS 那份不再靠手工 cp。 |
+| 同步链 | `tools/sync-library.js` 现在生成**三份**：`web/js/library-data.js`、`ios/XiangqiCoach/Resources/library.json`、`android/app/src/main/assets/library.json`（都是紧凑格式，各约 399 KB）。iOS 与 Android 那两份都不再靠手工 cp。 |
 | 判据 | `testEveryMatePuzzleIsPlayableAndActuallyWins` 换成**沿库里的解法路线走一遍判**（纯规则层，与网页端 `XQLIB.validateLibrary` 同一口径）。引擎断言拆出去成 `testShallowMatePuzzlesAreFoundByEngine`，只对 `mateIn ≤ 2` 的 32 道。 |
 | 守门 | 新增 `testBundleIsNotTheStaleCopy`（条数 ≥ 900 + 抽查 `m1`/`x0010`/`x0446`/`x0970` + 最深 ≥ 20 手）—— 这个洞当初能藏住，正是因为所有单测都只断言「非空」，而那些浅题也非空。 |
+| 守门（Android） | 2026-10-08 加 Android 端时把上面那条守门断言搬了一份过去（`android/engine/.../LibraryTests.isNotTheStaleCopy`，同样抽查那四个 id + 最深 ≥ 20 手）。**同一个洞换一端会再犯一次**，所以三端各留一道。 |
 
 **顺带修的一处 UI 隐患**：对局页的场景切换菜单原来是
 `ForEach(scenes.filter { $0.kind == .mate })` 平铺 —— 981 道题就是近千个菜单项。

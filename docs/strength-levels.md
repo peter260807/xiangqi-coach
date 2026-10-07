@@ -15,7 +15,7 @@
    Pikafish 只要 **3 毫秒**就能把我们 300ms 打到 4.2% 得分率（−545）。
 4. **给不出「相当于业余几级」** —— 详见第五节，这是硬约束不是谦虚。
 5. **顺带查出一个真问题：入门档（1 层）看不见任何杀棋，连一步杀都看不见**
-   （§3.3，两端 + Swift 实测确认）。它不只是「弱」，而是**不会将死对手**。
+   （§3.3，两端 + Swift 实测确认；Android 端的 Kotlin 引擎同一处逻辑，见 docs/android-plan.md）。它不只是「弱」，而是**不会将死对手**。
 
 ---
 
@@ -141,7 +141,7 @@ Elo 不好感知，这个更好感知 —— 也正好对应 App 里「提示」
 | 3 层 | 199999（杀） | `马四进五` | ✅ |
 | 4 层 | 199999（杀） | `马四进五` | ✅ |
 
-**两端一致**，而且都是同一处代码结构造成的：
+**两端一致**（Android 端的 Kotlin 移植同样是这一处结构），而且都是同一处代码结构造成的：
 
 - 网页端 `web/js/engine.js:915`：`if (depth <= 0) return quiesce(b, side, ...)`
 - iOS 端 `Engine/Search.swift:833`：`if depth <= 0 { return quiesce(&b, side, ...) }`
@@ -234,8 +234,9 @@ go depth 2   →  info depth 2 score cp 199999 pv f5e7   ← 马四进五，正�
 
 > **✅ 处置结果（2026-09-24 当天已落地）**：下面两条建议里，
 > 第 1 条走了「**合并**」而不是「修实」—— `master` 档已从代码里删除，
-> 现在只有**四档**（入门 / 初级 / 中级 / 高级）。三处档位定义
+> 现在只有**四档**（入门 / 初级 / 中级 / 高级）。四处档位定义
 > （`web/js/engine.js` 的 `LEVELS`、`ios/…/Search.swift` 的 `SearchLevel.all`、
+> `android/…/engine/Engine.kt` 的 `SearchLevel.all`、
 > `tools/level-match/gen-level-engines.js`）已同步，并补了双向对账 + 单测断言；
 > 老存档里的 `"master"` 会被映射到 `expert`（而不是静默掉成「初级」）。
 > 第 2 条（入门档盲区）**决定暂不修改**。

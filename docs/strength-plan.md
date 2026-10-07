@@ -153,7 +153,7 @@ node tools/match.js --a uci:tools/uci/build/xq-uci --b uci:/tmp/xq-uci-old --ms 
 # 和 Pikafish 比（它固定 100ms，我们 500ms）
 node tools/match.js --a uci:tools/uci/build/xq-uci --ms-a 500 --b pika --ms-b 100 --games 8
 
-# 只验规则：两份规则实现 + Pikafish 三方逐节点 perft 对数
+# 只验规则：三方规则实现 + Pikafish 逐节点 perft 对数
 node tools/match.js --perft 3
 ```
 
@@ -168,6 +168,8 @@ node tools/match.js --perft 3
 | 分辨力 | 6 局约 ±200~250 Elo，20 局约 ±107 Elo；提示里会直接写明「本批次能分辨多大差距」，避免把小样本噪声当结论 |
 
 **顺带验掉的一件事：两份规则实现与 Pikafish 完全一致。**
+（2026-10-08 补：Android 端的 Kotlin 实现加入后是**三份**规则实现 —— 这一条仍成立，
+另外由 `tools/test-rules-parity.js` 单独守着 Kotlin vs Swift。）
 `perft` 从标准开局逐深度对数（本项目 Swift / 本项目 JS / Pikafish）：深度 1 都是 **44**、
 深度 2 都是 **1920**、深度 3 都是 **79666**，且深度 3 的 **44 个根着法逐个计数完全相同**。
 这条很关键 —— 后面所有「搜索变强了」的结论都建立在「两边规则一致」这个前提上，
@@ -451,7 +453,8 @@ if (sc > alpha) sc = -negamax(b, opp, depth - 1, -beta, -alpha, ply + 1);  // �
 | 手段 | 内容 |
 |---|---|
 | `tools/test-draw.js`（22 项） | 「4 手不判 / 8 手才判」的边界、60 回合的 119/120 边界、中途吃子要清零计数、空循环不能算「全都将军」，以及**判定函数不许污染全局哈希**（带对照：直接用 `makeMove` 确实会把哈希推走） |
-| `ios/XiangqiCoachTests/DrawRuleTests.swift`（8 项） | 与上面一一对应的 Swift 版；两端同一套判据，改一边必须改另一边 |
+| `ios/XiangqiCoachTests/DrawRuleTests.swift`（8 项） | 与上面一一对应的 Swift 版；三端同一套判据，改一边必须改另外两边 |
+| `android/engine` 的 `Rules.adjudicate` + `ArchiveTests` | Kotlin 版，判据与上两者逐字对齐（2026-10-08 加入） |
 | **无头浏览器端到端** | 把长将局面导入 App、按剧本走完 4 个来回 → 真实 UI 上 `gameOver=true`、状态条「黑方获胜　长将（红方长将判负）。」；换成无将军的纯循环 → 「和棋　三次重复局面（双方均非长将）。」（截图 `docs/screenshots/web-draw-{perpetual-check,threefold}.png`） |
 | 对局台复测 | `tools/match.js` 改用**同一份**判据（不再自己维护 `seen` 表）→ 20 局里 **2 局被正确判为长将判负**（此前是静默循环算和棋），整体 Elo 仍是 +127 |
 
@@ -662,24 +665,54 @@ if (sc > alpha) sc = -negamax(b, opp, depth - 1, -beta, -alpha, ply + 1);  // �
 
 ---
 
-## 六、两个引擎要同步改（工程约束）
+## 六、三个引擎要同步改（工程约束）
 
 | 端 | 文件 | 规模 |
 |---|---|---|
-| iOS | `ios/XiangqiCoach/Engine/{Rules,Search,Notation}.swift` | 1044 行 |
-| 网页 | `web/js/engine.js` | 679 行 |
+| iOS | `ios/XiangqiCoach/Engine/{Rules,Search,Notation}.swift` | 1775 行 |
+| 网页 | `web/js/engine.js` | 1392 行 |
+| Android | `android/engine/…/engine/{Rules,Engine,Notation,Types}.kt` | 1990 行 |
 
-**两端是同一套算法的两份实现**（同样的 `killers` / `hist` / `quiesce` / `negamax` /
+> 这张表原来写的是 1044 / 679 —— 那是本节写于 2026-09-21 时的数字。
+> 2026-10-08 加 Android 端时一并按当前源码更正（这半年里三端都长了：
+> 判和与长将、排序补齐 PST/SEE、LMR 与空着裁剪、复盘与能力画像）。
+> 保留这段说明是因为**表格里的数字会随时间失真，而「哪来的」这一句不会**。
+
+**三端是同一套算法的三份实现**（同样的 `killers` / `hist` / `quiesce` / `negamax` /
 `orderMoves`，连 `LEVELS` 表的 depth/time/slack 都一模一样）。
 
-所以**每个搜索改动都要做两遍**。建议流程：
+所以**每个搜索改动都要做三遍**。建议流程：
 
 > **在 JS 侧做算法试验田**（改一行刷新就生效、`pk-match.js` 现成可用），
-> 验证有效后**再移植到 Swift**，最后用 P0 的对局台在 Swift 侧复验。
+> 验证有效后**再移植到 Swift 与 Kotlin**，最后用 P0 的对局台分别在两端复验。
 > 不要把「网页能搜 9 层了」当成「App 变强了」。
 
-长期看，两端算法重复维护是个持续成本，值得单独排一次「是否统一」的评估 ——
-但**现在不是**（P0 还没做，统一了也证明不了结果）。
+### 6.1 Android 端加入之后，这件事有了新工具
+
+这一节写于 2026-09-21，当时只有两端；2026-10-08 Android 端落地时，
+顺带补上了**两份「逐局面对数」的探针**（`tools/test-rules-parity.js` /
+`tools/test-engine-parity.js`），把「三份实现是否真的是同一套算法」变成可自动验的：
+
+| 探针 | 覆盖 | 结果 |
+|---|---|---|
+| `tools/match.js --perft 3` | Swift / JS / Pikafish 三方逐根着法对数 | 深度 1/2/3 全一致 |
+| `tools/test-rules-parity.js` | **Kotlin vs Swift**，棋谱库全部 985 个局面 × 深度 1、2 | 1970 项全一致 |
+| `tools/test-engine-parity.js` | **Kotlin vs JS**，982 个局面的静态评估 / 着法生成（双方）/ 中文记谱 | 982 + 1964 + 982 项全一致 |
+
+这三条合起来覆盖了「三端两两一致」，而且**确定性**远强于 Elo 对局 ——
+抄错一行位置价值表在对局里看不出来，在这里一定露馅
+（实际拦下的就是这类问题：perft 计数口径、棋盘缩放、位置表抄写）。
+
+> ⚠️ **探针只能保证「三份实现一致」，保证不了「三份都对」。**
+> 它们拿 JS 当基准，而 JS 与 Swift 的一致性由 Pikafish 三方 perft 守着 ——
+> 链路是「Pikafish 锚定 Swift/JS，再锚定 Kotlin」。
+> 已知且**三端共有**的一个偏差：快版将军判定不认「将帅照面即将军」
+> （`inCheckByGeneration` 那个参考实现才认），根节点用的是参考版，所以对局层不受影响。
+
+长期看，三端算法重复维护是个持续成本。Android 落地时**没有**顺手统一 ——
+理由是「统一」需要一个跨端的共享内核（C++/Rust），而这件事的收益要等
+「搜索侧还能不能再挖出东西」有答案之后才好算。判断仍然成立：
+**现在不是排这件事的时候**，但现在至少有了「改动有没有把三端改歪」的自动防线。
 
 ---
 
