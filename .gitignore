@@ -94,3 +94,17 @@ tools/ab-package/ab-progress-*.jsonl
 # 求解结果（我们自己的产出）才进仓库，见 shared/library.json。
 # 来源与许可见 docs/puzzle-sources.md
 shared/external/
+
+# ---------- Android ----------
+# Gradle 的构建产物与本机 SDK/JDK 路径。工程文件（build.gradle.kts）进仓库，
+# 中间产物不进 —— 与 ios/ 那边「project.yml 进、xcodeproj 不进」同一个口径。
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+android/.idea/
+*.apk
+*.aab
+!android/**/src/**/*.png
+# UCI 前端的编译产物（android/tools/uci/run.sh 随时可重新生成）
+android/tools/uci/build/

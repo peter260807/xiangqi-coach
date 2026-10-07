@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与 iOS Palette.paper 一致：#f4f1ea -->
+    <color name="paper">#FFF4F1EA</color>
+    <color name="jade">#FF0F6E56</color>
+    <color name="ic_launcher_background">#FF9E2B25</color>
+</resources>

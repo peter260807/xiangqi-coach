@@ -5,11 +5,13 @@
  *       （页面要支持 file:// 直接打开，不能用 fetch，所以做成 JS 常量）
  *   ios/XiangqiCoach/Resources/library.json   iOS 端
  *       （XcodeGen 把 ios/XiangqiCoach 整目录收作源，App 直接从 bundle 读这个文件）
+ *   android/app/src/main/assets/library.json  Android 端
+ *       （Gradle 把 src/main/assets 打进 APK，App 从 AssetManager 读这个文件）
  *
  * shared/library.json 是棋谱库的唯一数据源。改完棋谱后运行：
  *   node tools/sync-library.js
  *
- * ⚠️ **两端都必须由这个脚本产出。**
+ * ⚠️ **每一端都必须由这个脚本产出。**
  * 以前这里只生成网页端那份，iOS 那份是手工 cp 进去的「独立副本」，
  * 于是导入 445 道 + 用 Pikafish 又解出 525 道（共 981 道）之后，
  * 网页端有 981 道、iOS 端还停在 11 道 —— 而**所有单测照样全绿**，
@@ -23,6 +25,7 @@ const root = path.resolve(__dirname, '..');
 const jsonPath = path.join(root, 'shared', 'library.json');
 const webPath = path.join(root, 'web', 'js', 'library-data.js');
 const iosPath = path.join(root, 'ios', 'XiangqiCoach', 'Resources', 'library.json');
+const androidPath = path.join(root, 'android', 'app', 'src', 'main', 'assets', 'library.json');
 
 const data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
 
@@ -56,10 +59,13 @@ const header = [
 
 fs.writeFileSync(webPath, header);
 fs.writeFileSync(iosPath, json + '\n');
+fs.mkdirSync(path.dirname(androidPath), { recursive: true });
+fs.writeFileSync(androidPath, json + '\n');
 
 const kb = (p) => (fs.statSync(p).size / 1024).toFixed(1) + ' KB';
 console.log('已同步棋谱库（源 shared/library.json ' + kb(jsonPath) + '）');
 console.log('  web/js/library-data.js                   ' + kb(webPath));
 console.log('  ios/XiangqiCoach/Resources/library.json  ' + kb(iosPath));
+console.log('  android/app/src/main/assets/library.json ' + kb(androidPath));
 console.log('  杀法 ' + data.mates.length + ' 条，开局 ' + data.openings.length
   + ' 条，残局 ' + data.studies.length + ' 条，名局 ' + ((data.classics || []).length) + ' 条');

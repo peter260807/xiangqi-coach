@@ -8,6 +8,7 @@
 | 前端 | 说明 |
 |---|---|
 | **iOS 原生**（SwiftUI） | iPhone + iPad，离线可用，界面动画完整 |
+| **Android 原生**（Kotlin + Compose） | 引擎是 Kotlin 重写的版本，与 iOS 行为对齐；四档难度、981 道杀法题 |
 | **网页版**（纯前端） | 零依赖，手机浏览器打开后可「添加到主屏幕」当 App 用 |
 
 ---
@@ -146,7 +147,54 @@ iPhone 侧则用 `horizontalSizeClass == .regular && verticalSizeClass == .regul
 判断要不要分栏。只看宽度是不够的：**iPhone 横屏的宽度同样算 `.regular`，但高度很紧**，
 那时候竖排反而更好用。
 
-#### 应用图标
+### Android 版
+
+需要 JDK 21 与 Android SDK（本机用 `~/Library/Android/sdk`）：
+
+```bash
+cd android
+echo "sdk.dir=$HOME/Library/Android/sdk" > local.properties
+./gradlew :app:assembleDebug          # 产物：app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleRelease        # 1.3 MB（开了 R8 压缩）
+```
+
+装到模拟器 / 真机：
+
+```bash
+adb install -r android/app/build/outputs/apk/release/app-release.apk
+```
+
+![Android 对弈页](docs/screenshots/android-play.png)
+
+**工程结构**（与 `ios/` 平级，共用一个棋谱库）：
+
+| 目录 | 内容 |
+|---|---|
+| `android/engine/` | **纯 Kotlin JVM 库**：规则 / 搜索 / 记谱 / 棋谱库 / 复盘与能力画像。零 Android 依赖，单测秒级 |
+| `android/app/` | Compose 界面：对弈 / 训练 / 战绩 / 设置 |
+| `android/tools/uci/` | UCI 前端：把引擎包成命令行程序，交给 `tools/match.js` 当选手测 Elo |
+
+> ⚠️ **JDK 不要用 25。** AGP 8.7 / Kotlin 2.0 的支持上限是 JDK 21，
+> 而 Android Studio 自带的 JBR 是 25 —— 用它启动 Gradle 会直接崩在
+> `JavaVersion.parse("25.0.2")`，报错指不到真正的原因。指定方式任选其一：
+>
+> ```bash
+> JAVA_HOME=/path/to/jdk21 ./gradlew :app:assembleDebug     # 命令行 / CI
+> ./gradlew :app:assembleDebug -Dorg.gradle.java.home=/path/to/jdk21
+> # Android Studio：Settings → Build Tools → Gradle → Gradle JDK → 21
+> ```
+>
+> ⚠️ 写进 `local.properties` 的 `org.gradle.java.home` **不生效**（Gradle 只读命令行与
+> `gradle.properties` 里的这个属性）—— 实测确认过，它仍会拿 JBR 25 启动然后崩。
+
+**为什么引擎要重写一遍而不是套 WebView**：这个仓库已经有一整套为「重写」准备的验收设施 ——
+perft 对数（两份规则实现必须逐节点一致）、UCI 对局台（量 Elo）、档位对局台。
+换个语言重写引擎，最怕的是「看起来能下棋，其实规则悄悄错了」，
+而这三件工具正好是这个恐惧的解药。移植进度与实测数据见
+[`docs/android-plan.md`](docs/android-plan.md)：**985 个局面与 Swift 逐一对数全一致、
+982 个局面的评估/着法/记谱与 JS 全一致、40 局对 Swift 得分率 52.5%（Elo +17，区间跨 0）**。
+
+### 应用图标
 
 `ios/XiangqiCoach/Resources/Assets.xcassets/AppIcon.appiconset/` 里的
 `AppIcon-1024.png` 是脚本生成的（红底 + 淡棋盘网格 + 木质「帅」棋子），
@@ -321,6 +369,25 @@ node tools/match.js --perft 3                        # 顺带验规则：本项�
 > **默认不清表**（那是引擎本来的行为，也是历史批次的口径）；要可复现就加 `--clear-tt`，
 > 代价是中局每手慢好几倍（开局段只慢 1.4 倍，所以别拿开局估这个代价）。
 
+Android 端有两层测试（都在 JVM 上跑，**不需要模拟器**）：
+
+```bash
+cd android
+./gradlew :engine:test        # 规则 perft、棋谱库逐条校验、复盘与能力画像（28 项）
+./gradlew :app:testDebugUnitTest   # 对局流程（Robolectric）：点选/走子/悔棋/导入导出/存档（17 项）
+
+# 规则层「Kotlin vs Swift」在 985 个局面上逐一对数（先编两个 UCI 前端）
+./tools/uci/run.sh && ./android/tools/uci/run.sh
+node tools/test-rules-parity.js      # perft 逐局面逐深度比对（1970 项）
+node tools/test-engine-parity.js     # 评估 / 着法生成 / 中文记谱 vs JS（3928 项）
+```
+
+> **这两个脚本是「移植有没有抄错一行」的探针，比 Elo 对局确定性强得多。**
+> 抄错一行位置价值表在对局里看不出来，在这里一定露馅；
+> 而且总数相同也要比**逐着法分布** —— 两种错误互相抵消时总数会一样。
+> 它们都拿 JS 引擎当基准（JS 有现成的 Node 模块边界），
+> 而 JS 与 Swift 的规则一致性由 `tools/match.js --perft` 的三方对数守着。
+
 iOS 端另有一套 XCTest 单元测试（104 个用例）：
 
 ```bash
@@ -390,7 +457,7 @@ xcodebuild test -project XiangqiCoach.xcodeproj -scheme XiangqiCoach \
 ```
 .
 ├── shared/
-│   └── library.json          棋谱库唯一数据源（两端共用）
+│   └── library.json          棋谱库唯一数据源（三端共用）
 ├── web/                      网页版
 │   ├── index.html
 │   ├── css/app.css
@@ -412,13 +479,20 @@ xcodebuild test -project XiangqiCoach.xcodeproj -scheme XiangqiCoach \
 │       ├── Views/            棋盘 / 对弈 / 训练 / 战绩 / 设置
 │       └── Resources/
 │           └── library.json  由 tools/sync-library.js 生成，勿手改
+├── android/                  Android 版（Kotlin + Compose）
+│   ├── engine/               纯 Kotlin JVM 库：规则 / 搜索 / 记谱 / 棋谱库 / 复盘
+│   │   └── src/test/         perft、棋谱库逐条校验、能力画像（JVM 单测，秒级）
+│   ├── app/                  Compose 界面：对弈 / 训练 / 战绩 / 设置
+│   │   └── src/main/assets/library.json  由 tools/sync-library.js 生成，勿手改
+│   └── tools/uci/            UCI 前端：把引擎包成命令行程序给对局台用
 ├── tools/                    测试、同步与数据脚本
 │   ├── test-engine.js        规则与棋谱库校验
 │   ├── test-draw.js          判和 / 长将判负的规则（长将、三次重复、60 回合）
 │   ├── test-rep-search.js    搜索层的和棋意识（重复局面按 0 分）
 │   ├── test-ai.js            大模型联通性
 │   ├── sync-library.js       shared/library.json → web/js/library-data.js + ios/…/Resources/library.json
-│   │                         （两端都由它产出 —— iOS 那份曾经是手工 cp 的「独立副本」，
+│   │                                             + android/…/assets/library.json
+│   │                         （三端都由它产出 —— iOS 那份曾经是手工 cp 的「独立副本」，
 │   │                           结果停在导入之前的 11 道题上，见 docs/puzzle-sources.md §六.5）
 │   ├── gen-lines.js          用引擎离线算各杀局的解法路线
 │   ├── add-classics.js       录入并校验古谱名局
